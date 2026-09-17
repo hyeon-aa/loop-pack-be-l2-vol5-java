@@ -103,6 +103,11 @@ public class ApiControllerAdvice {
     }
 
     @ExceptionHandler
+    public ResponseEntity<ApiResponse<?>> handleBadRequest(IllegalArgumentException e) {
+        return failureResponse(ErrorType.BAD_REQUEST, e.getMessage());
+    }
+
+    @ExceptionHandler
     public ResponseEntity<ApiResponse<?>> handleNotFound(NoResourceFoundException e) {
         return failureResponse(ErrorType.NOT_FOUND, null);
     }
