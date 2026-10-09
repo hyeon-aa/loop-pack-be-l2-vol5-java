@@ -21,6 +21,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.TransactionDefinition;
 
 import javax.sql.DataSource;
 import java.sql.SQLException;
@@ -151,13 +152,18 @@ class BrandBulkDeletionExperimentTest {
     static Stream<Arguments> distributionCases() {
         return Stream.of(2, 100).flatMap(count -> Stream.of(false, true)
             .flatMap(analyzed -> Stream.of(Strategy.values())
-                .map(strategy -> Arguments.of(count, analyzed, strategy))));
+                .flatMap(strategy -> Stream.of(false, true)
+                    .map(rc -> Arguments.of(count, analyzed, strategy, rc)))));
     }
 
     @ParameterizedTest
     @MethodSource("distributionCases")
-    void comparesDistributionAndActualProductUpdate(int brandCount, boolean analyzed, Strategy strategy)
+    void comparesDistributionAndActualProductUpdate(int brandCount, boolean analyzed, Strategy strategy, boolean rc)
         throws Exception {
+        TransactionTemplate experiment = new TransactionTemplate(transaction.getTransactionManager());
+        experiment.setIsolationLevel(rc ? TransactionDefinition.ISOLATION_READ_COMMITTED
+            : TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        String isolation = rc ? "READ-COMMITTED" : "REPEATABLE-READ";
         Fixture fixture = prepare(100);
         List<Long> extraBrands = new ArrayList<>();
         for (int i = 2; i < brandCount; i++) {
@@ -176,8 +182,8 @@ class BrandBulkDeletionExperimentTest {
         if (analyzed) {
             jdbc.queryForList("analyze table product");
         }
-        System.out.printf("DISTRIBUTION_PLAN brands=%d analyzed=%s strategy=%s plan=%s%n",
-            brandCount, analyzed, strategy, jdbc.queryForList(
+        System.out.printf("DISTRIBUTION_PLAN isolation=%s brands=%d analyzed=%s strategy=%s plan=%s%n",
+            isolation, brandCount, analyzed, strategy, jdbc.queryForList(
                 "explain update product set deleted_at = UTC_TIMESTAMP(6), updated_at = UTC_TIMESTAMP(6) "
                     + "where brand_id = ? and deleted_at is null", fixture.brandId()));
         var executor = Executors.newFixedThreadPool(2);
@@ -186,7 +192,9 @@ class BrandBulkDeletionExperimentTest {
             // 최대 200ms 커밋을 미루는 인위적 실험이며 정상 응답 지연으로 해석하지 않는다.
             long[] heldUpdateNanos = new long[1];
             java.util.concurrent.Future<?>[] held = new java.util.concurrent.Future<?>[1];
-            transaction.executeWithoutResult(status -> {
+            experiment.executeWithoutResult(status -> {
+                assertThat(jdbc.queryForObject("select @@session.transaction_isolation", String.class))
+                    .isEqualTo(isolation);
                 delete(strategy, fixture);
                 entityManager.flush();
                 boolean blocked = lockUnavailable(fixture.otherId());
@@ -204,12 +212,12 @@ class BrandBulkDeletionExperimentTest {
                 } catch (Exception exception) {
                     throw new IllegalStateException(exception);
                 }
-                System.out.printf("DISTRIBUTION_HELD brands=%d analyzed=%s strategy=%s blocked=%s "
-                    + "updateFinishedBeforeCommit=%s%n", brandCount, analyzed, strategy, blocked, finished);
+                System.out.printf("DISTRIBUTION_HELD isolation=%s brands=%d analyzed=%s strategy=%s blocked=%s "
+                    + "updateFinishedBeforeCommit=%s%n", isolation, brandCount, analyzed, strategy, blocked, finished);
             });
             held[0].get(10, TimeUnit.SECONDS);
-            System.out.printf("DISTRIBUTION_HELD_TIME brands=%d analyzed=%s strategy=%s ms=%.3f%n",
-                brandCount, analyzed, strategy, heldUpdateNanos[0] / 1_000_000.0);
+            System.out.printf("DISTRIBUTION_HELD_TIME isolation=%s brands=%d analyzed=%s strategy=%s ms=%.3f%n",
+                isolation, brandCount, analyzed, strategy, heldUpdateNanos[0] / 1_000_000.0);
             assertThat(jdbc.queryForObject("select name from product where id = ?", String.class,
                 fixture.otherId())).isEqualTo("modified");
             for (int round = 0; round < 3; round++) {
@@ -221,7 +229,7 @@ class BrandBulkDeletionExperimentTest {
                 var deletion = executor.submit(() -> {
                     awaitStart(start);
                     long began = System.nanoTime();
-                    transaction.executeWithoutResult(status -> delete(strategy, fixture));
+                    experiment.executeWithoutResult(status -> delete(strategy, fixture));
                     return (System.nanoTime() - began) / 1_000_000.0;
                 });
                 var update = executor.submit(() -> {
@@ -233,8 +241,8 @@ class BrandBulkDeletionExperimentTest {
                 start.countDown();
                 double deletionMs = deletion.get(20, TimeUnit.SECONDS);
                 double updateMs = update.get(20, TimeUnit.SECONDS);
-                System.out.printf("DISTRIBUTION_NATURAL brands=%d analyzed=%s strategy=%s round=%d "
-                    + "deleteMs=%.3f updateMs=%.3f%n", brandCount, analyzed, strategy, round, deletionMs, updateMs);
+                System.out.printf("DISTRIBUTION_NATURAL isolation=%s brands=%d analyzed=%s strategy=%s round=%d "
+                    + "deleteMs=%.3f updateMs=%.3f%n", isolation, brandCount, analyzed, strategy, round, deletionMs, updateMs);
                 assertThat(countActive(fixture.brandId())).isZero();
                 assertThat(countActive(fixture.otherBrandId())).isEqualTo(100);
                 assertThat(jdbc.queryForObject("select name from product where id = ?", String.class,
