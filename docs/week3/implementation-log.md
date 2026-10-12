@@ -189,6 +189,8 @@
 | 포인트 이력 증가 비용 | 지급건·사용 기록 수를 늘려 SQL 횟수·조회 행 수·트랜잭션 시간과 대기를 비교 | 미검증 |
 | 재고 보호 방식 성능 비교 | 수동 SQL 실험의 동작 관찰과 구분하며, 재현 가능한 부하 조건·측정 결과를 이 문서에는 남기지 않았다 | 성능 결론 없음 |
 
+위 미검증 항목은 후속 성능·운영 설정 연구이며 이번 3주차 필수 기능의 미구현 항목은 아니다. 정합성·원자성·대표 실패 응답은 앞 절의 통과 사례로 검증했고, 운영 응답 시간이나 처리량 보장은 별도로 남긴다.
+
 연결 부족 실험에서는 풀의 사용 중·유휴 연결 수와 연결 대기 요청 수를 관찰한다. DB 잠금 대기가 먼저 끝나 결과를 가리지 않도록 두 대기 제한을 구분하고, 모든 작업 종료 뒤 데이터를 정리한다. worker 수가 풀보다 많으면 연결 대기로 실행이 나뉠 수 있으므로, 행 잠금 경쟁만 확인하려는 테스트와 연결 부족 실험을 구분한다. 위 성능 실험은 아직 실행하지 않았다. 서비스의 잠금 대기 시간은 DB 설정을 따른다. 실패 경로 검증용 테스트는 1초 제한을 사용하며, 커넥션 획득 제한은 3,000ms다.
 
 ## 4. 3주차에 확장한 정책의 구현 기록
@@ -255,3 +257,106 @@
 ### 격리 수준 적용 범위 설명 정정
 
 ADR 0019와 설계 2.2에서 전체 기본값 변경과 브랜드 삭제 트랜잭션만 RC로 시작하는 대안을 구분했다. REQUIRED 참여 시 바깥 격리 수준을 따른다는 조건과, 상품 삭제만 별도 커밋하지 않는다는 경계도 명시했다. RC 국소 적용이 불가능해서 기존 방식을 유지한 것은 아니다. 기존 RC 비교 결과와 미검증 범위를 유지했으며 이번 작업은 문서 정정이다. 코드·DB 설정은 변경하지 않았고 테스트를 새로 실행하지 않았다.
+
+### RC·브랜드 잠금·벌크 후보의 업무 검증 마무리
+
+`BrandRcBulkValidationTest`에서 테스트 전용 Facade 후보를 Spring 프록시·Controller에 연결했다. 기존 BrandService·등록·주문·수정 서비스를 사용하며 운영 삭제 구현은 바꾸지 않았다. 새 RC 시작과 바깥 RR 합류, 정상 삭제·기존 삭제 시각 및 값 보존, 실제 브랜드·상품 SQL 뒤 예외의 전체 rollback, 등록·주문·수정 경쟁의 두 순서와 삭제 rollback, 다른 브랜드 수정이 먼저 잠근 반대 방향을 확인한다.
+
+경쟁은 해당 PK의 실제 data_lock_waits를 관찰한 뒤 commit/rollback하며, 모든 worker 종료 후 정리한다. 결과는 독립 JDBC 조회로 확인한다. 후보 검증에서 기존 규칙을 깨는 결과는 없었고, 국소 RC·벌크 전환을 검토할 근거를 확보했다. 현재 구현 유지와 후보 검증 완료를 구분해 ADR 0019·설계를 갱신했다.
+
+RC 후보 테스트 15건이 통과했다. 기존 RR 벌크 실험에서 이미 확인한 rollback과 이번 RC 후보의 rollback을 구분해 기록했다. 높은 동시 부하나 모든 실행 계획의 성능·교착 부재는 이번 결과로 보장하지 않는다.
+
+### RR·인덱스 힌트·벌크 추가 비교
+
+RC 후보 검증의 공통 테스트를 재사용해 RR·힌트 후보도 같은 업무 사례 15건을 통과했다. 각 후보의 실제 격리 수준과 경쟁을 만드는 바깥 트랜잭션의 격리 수준을 맞춰 비교했다.
+
+별도 비교 테스트에서 여섯 분포·통계 조건 × 세 전략의 계획·단독 삭제 시간을 측정했다. 대상 외 기존 상품 한 행의 충돌은 RR plain 5/6, RR hint와 RC plain 각각 0/6이었다. 기존 삭제 상품이 없는 대상 브랜드와 비어 있는 다른 브랜드를 준비한 별도 INSERT 사례에서는 RR hint의 실제 대기를 확인했고 RC plain은 commit 전에 완료했다. 삭제 상품을 검색 경계에 둔 fixture에서는 두 방식 모두 INSERT가 완료됐다. 시간이 더 짧은 전략은 조건마다 달라 작은 표본으로 성능 우위를 단정하지 않는다.
+
+검증 근거는 ADR 0019에, 원본 표본은 아래 실험 원본에 기록했다. 후보 검토만 수행했고 운영 삭제·기존 DB는 변경하지 않았다.
+
+INSERT 대기 상세는 `idx_product_brand_deleted`의 supremum에서 요청 `X,INSERT_INTENTION`과 삭제 측 `X`의 충돌이었다. 원본은 아래 INSERT 대기 기록에 보존했다. RR 후보 15건·RC 후보 15건·별도 비교 8건이 통과했다.
+
+### INSERT와 잠금 목록 추가 확인
+
+브랜드 삭제는 기존 ID별 잠금·삭제와 RR을 유지하는 것으로 최종 확정했다. 후보를 실제 서비스에 적용하지 않았다. Velog에서 미확인으로 둔 현재 ID별 방식·RR 벌크의 다른 브랜드 INSERT를 추가 실험했고, 기존 삭제 상품이 있는 경우의 data_locks도 직접 확인했다. 기존 ID별 방식은 두 fixture에서 등록이 완료됐고 RR 벌크는 끝 구간을 잠그는 fixture에서만 대기했다. RC·힌트 후보 결과와 함께 ADR 0019에 관찰 범위를 명시했다.
+
+추가 테스트의 최초 실행은 Docker 소켓 자동 탐색 실패로 실행되지 않았다. DOCKER_HOST에 Docker Desktop의 실제 소켓을 명시한 뒤 관련 테스트 8건과 ArchUnit 1건이 통과했다. 이 환경 실패를 정합성 실패나 TDD Red로 기록하지 않는다.
+
+3주차 코드·테스트 범위의 전체 check **241개, 실패 0·오류 0·skip 0**, Checkstyle·ArchUnit 통과. 기능상 필수 미완료 항목은 확인하지 못했고, 미검증 성능 범위는 3.3에 후속 연구로 구분했다.
+
+### 벌크 후보 실험 원본
+
+#### 단독 삭제 비교
+
+<details>
+<summary>관찰 원본 보기</summary>
+
+```text
+HINT_INSERT strategy=RR_HINT oldDeletedBoundary=false blocked=true
+HINT_INSERT strategy=RC_PLAIN oldDeletedBoundary=false blocked=false
+HINT_INSERT strategy=RR_HINT oldDeletedBoundary=true blocked=false
+HINT_INSERT strategy=RC_PLAIN oldDeletedBoundary=true blocked=false
+HINT_COMPARE brands=2 perBrand=100 analyzed=false strategy=RR_PLAIN key=PRIMARY type=index otherBlocked=true medianMs=9.775 samples=[9.51525, 9.775, 10.825209]
+HINT_COMPARE brands=2 perBrand=100 analyzed=false strategy=RR_HINT key=idx_product_brand_deleted type=range otherBlocked=false medianMs=11.244 samples=[9.384334, 11.243584, 14.880667]
+HINT_COMPARE brands=2 perBrand=100 analyzed=false strategy=RC_PLAIN key=PRIMARY type=index otherBlocked=false medianMs=9.963 samples=[9.187792, 9.963042, 10.121958]
+HINT_COMPARE brands=100 perBrand=100 analyzed=false strategy=RR_PLAIN key=PRIMARY type=index otherBlocked=true medianMs=13.802 samples=[13.297542, 13.801917, 14.010916]
+HINT_COMPARE brands=100 perBrand=100 analyzed=false strategy=RR_HINT key=idx_product_brand_deleted type=range otherBlocked=false medianMs=13.173 samples=[12.487209, 13.172833, 15.496041]
+HINT_COMPARE brands=100 perBrand=100 analyzed=false strategy=RC_PLAIN key=PRIMARY type=index otherBlocked=false medianMs=16.044 samples=[15.593416, 16.044458, 16.817208]
+HINT_COMPARE brands=2 perBrand=1000 analyzed=false strategy=RR_PLAIN key=PRIMARY type=index otherBlocked=true medianMs=32.342 samples=[26.72575, 32.342459, 34.665834]
+HINT_COMPARE brands=2 perBrand=1000 analyzed=false strategy=RR_HINT key=idx_product_brand_deleted type=range otherBlocked=false medianMs=32.567 samples=[24.332833, 32.566917, 32.919917]
+HINT_COMPARE brands=2 perBrand=1000 analyzed=false strategy=RC_PLAIN key=PRIMARY type=index otherBlocked=false medianMs=44.340 samples=[30.113709, 44.340167, 53.339375]
+HINT_COMPARE brands=2 perBrand=100 analyzed=true strategy=RR_PLAIN key=PRIMARY type=index otherBlocked=true medianMs=13.158 samples=[9.931917, 13.158084, 14.19275]
+HINT_COMPARE brands=2 perBrand=100 analyzed=true strategy=RR_HINT key=idx_product_brand_deleted type=range otherBlocked=false medianMs=15.556 samples=[9.7155, 15.556083, 19.154125]
+HINT_COMPARE brands=2 perBrand=100 analyzed=true strategy=RC_PLAIN key=PRIMARY type=index otherBlocked=false medianMs=11.426 samples=[10.653209, 11.426125, 12.797958]
+HINT_COMPARE brands=100 perBrand=100 analyzed=true strategy=RR_PLAIN key=idx_product_brand_deleted type=range otherBlocked=false medianMs=16.371 samples=[15.025833, 16.371208, 18.506708]
+HINT_COMPARE brands=100 perBrand=100 analyzed=true strategy=RR_HINT key=idx_product_brand_deleted type=range otherBlocked=false medianMs=12.574 samples=[11.356417, 12.574125, 12.771917]
+HINT_COMPARE brands=100 perBrand=100 analyzed=true strategy=RC_PLAIN key=idx_product_brand_deleted type=range otherBlocked=false medianMs=9.531 samples=[9.445916, 9.531416, 11.94]
+HINT_COMPARE brands=2 perBrand=1000 analyzed=true strategy=RR_PLAIN key=PRIMARY type=index otherBlocked=true medianMs=29.010 samples=[28.837417, 29.010042, 29.163167]
+HINT_COMPARE brands=2 perBrand=1000 analyzed=true strategy=RR_HINT key=idx_product_brand_deleted type=range otherBlocked=false medianMs=49.458 samples=[36.784541, 49.457833, 66.93]
+HINT_COMPARE brands=2 perBrand=1000 analyzed=true strategy=RC_PLAIN key=PRIMARY type=index otherBlocked=false medianMs=32.236 samples=[32.06975, 32.23575, 37.988875]
+```
+
+</details>
+
+#### INSERT 대기
+
+<details>
+<summary>관찰 원본 보기</summary>
+
+```text
+HINT_INSERT_LOCK index=idx_product_brand_deleted requestingMode=X,INSERT_INTENTION requestingData=supremum pseudo-record blockingMode=X blockingData=supremum pseudo-record
+HINT_INSERT strategy=RR_HINT oldDeletedBoundary=false blocked=true
+HINT_INSERT strategy=RC_PLAIN oldDeletedBoundary=false blocked=false
+HINT_INSERT strategy=RR_HINT oldDeletedBoundary=true blocked=false
+HINT_INSERT strategy=RC_PLAIN oldDeletedBoundary=true blocked=false
+```
+
+</details>
+
+#### 잠금 목록
+
+<details>
+<summary>관찰 원본 보기</summary>
+
+```text
+HINT_SNAPSHOT strategy=ID_BY_ID oldDeletedBoundary=false locks=[PRIMARY:X,REC_NOT_GAP:1]
+HINT_INSERT strategy=ID_BY_ID oldDeletedBoundary=false blocked=false
+HINT_SNAPSHOT strategy=RR_PLAIN oldDeletedBoundary=false locks=[idx_product_brand_deleted:X,GAP:1, 0x99BB18AB610EF5DB, 1, idx_product_brand_deleted:X:1, NULL, 1, idx_product_brand_deleted:X:supremum pseudo-record, PRIMARY:X,REC_NOT_GAP:1]
+HINT_INSERT_LOCK index=idx_product_brand_deleted requestingMode=X,INSERT_INTENTION requestingData=supremum pseudo-record blockingMode=X blockingData=supremum pseudo-record
+HINT_INSERT strategy=RR_PLAIN oldDeletedBoundary=false blocked=true
+HINT_SNAPSHOT strategy=RR_HINT oldDeletedBoundary=false locks=[idx_product_brand_deleted:X,GAP:1, 0x99BB18AB62081E97, 1, idx_product_brand_deleted:X:1, NULL, 1, idx_product_brand_deleted:X:supremum pseudo-record, PRIMARY:X,REC_NOT_GAP:1]
+HINT_INSERT_LOCK index=idx_product_brand_deleted requestingMode=X,INSERT_INTENTION requestingData=supremum pseudo-record blockingMode=X blockingData=supremum pseudo-record
+HINT_INSERT strategy=RR_HINT oldDeletedBoundary=false blocked=true
+HINT_SNAPSHOT strategy=RC_PLAIN oldDeletedBoundary=false locks=[idx_product_brand_deleted:X,REC_NOT_GAP:1, NULL, 1, PRIMARY:X,REC_NOT_GAP:1]
+HINT_INSERT strategy=RC_PLAIN oldDeletedBoundary=false blocked=false
+HINT_SNAPSHOT strategy=ID_BY_ID oldDeletedBoundary=true locks=[PRIMARY:X,REC_NOT_GAP:2]
+HINT_INSERT strategy=ID_BY_ID oldDeletedBoundary=true blocked=false
+HINT_SNAPSHOT strategy=RR_PLAIN oldDeletedBoundary=true locks=[idx_product_brand_deleted:X,GAP:1, 0x99A5440000000000, 1, idx_product_brand_deleted:X:1, NULL, 2, PRIMARY:X,REC_NOT_GAP:2]
+HINT_INSERT strategy=RR_PLAIN oldDeletedBoundary=true blocked=false
+HINT_SNAPSHOT strategy=RR_HINT oldDeletedBoundary=true locks=[idx_product_brand_deleted:X,GAP:1, 0x99A5440000000000, 1, idx_product_brand_deleted:X:1, NULL, 2, PRIMARY:X,REC_NOT_GAP:2]
+HINT_INSERT strategy=RR_HINT oldDeletedBoundary=true blocked=false
+HINT_SNAPSHOT strategy=RC_PLAIN oldDeletedBoundary=true locks=[idx_product_brand_deleted:X,REC_NOT_GAP:1, NULL, 2, PRIMARY:X,REC_NOT_GAP:2]
+HINT_INSERT strategy=RC_PLAIN oldDeletedBoundary=true blocked=false
+```
+
+</details>
