@@ -23,3 +23,17 @@ Date: 2026-10-09
 
 - [설계 2.2](../week3/design.md#22-상품-등록과-브랜드-삭제)
 - [구현 기록 2.2](../week3/implementation-log.md#22-상품-등록과-브랜드-삭제)
+
+## 검증 방법과 확인 범위
+
+| 검증 | 준비·실행 | 확인한 결과 |
+|---|---|---|
+| 다른 브랜드 기존 상품 | 실제 삭제 Facade 호출 후 커밋 전 다른 브랜드 상품을 PK FOR UPDATE NOWAIT로 조회 | 검사한 행의 잠금 즉시 획득. 후보 ID·PK 조회 EXPLAIN도 출력 |
+| 등록 직후 대상 포함 | 등록이 브랜드 공유 잠금을 유지한 상태에서 삭제 요청 실행 | 등록 커밋 뒤 삭제가 새 상품까지 포함 |
+| 여러 상품 순서 | 반대 품목 순서 주문 두 건 동시 실행 | 둘 다 성공, 품목별 수량 보존. ID 오름차순 조회는 구현과 대조 |
+| 삭제와 주문 | 실제 삭제·확정 동시 실행 | 삭제 우선이면 주문 거절·재고 보존. 확정 성공이면 차감 재고를 유지한 채 삭제 |
+| 다른 브랜드 새 INSERT | 현재 ID별 방식으로 삭제를 미커밋 상태로 유지하고 빈 다른 브랜드에 실제 등록 | 대상 브랜드의 기존 삭제 상품 유무 두 경우 모두 삭제 커밋 전에 등록 완료. 새 상품 활성·기존 삭제 시각·대상 삭제 결과 확인 |
+
+기존 구현은 [BrandConcurrencyTest](../../apps/commerce-api/src/test/java/com/loopers/application/brand/BrandConcurrencyTest.java)와 [StockConcurrencyTest](../../apps/commerce-api/src/test/java/com/loopers/application/order/StockConcurrencyTest.java), INSERT 비교는 BrandHintComparisonTest로 확인한다. 네 방식의 비교 조건·잠금 검사 절차는 [ADR 0019](0019-brand-bulk-deletion-comparison.md)에 둔다.
+
+한 행의 NOWAIT 성공을 모든 데이터 배치에서 무충돌이라고 확대하지 않는다. EXPLAIN도 이후 계획을 고정하지 않는다. 과거 스냅샷을 가진 바깥 RR 트랜잭션 합류와 상품 브랜드 이동은 현재 전제 밖이므로 검증 완료로 보지 않는다.

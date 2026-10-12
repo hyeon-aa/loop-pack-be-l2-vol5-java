@@ -92,16 +92,60 @@ WHERE brand_id = :brandId AND deleted_at IS NULL;
 
 | 방식 | 기존 삭제 상품 없음(A) | 기존 삭제 상품 있음(B) |
 | --- | --- | --- |
-| 현재 ID별 삭제 | 등록 commit 전 완료 | 등록 commit 전 완료 |
-| RR 벌크 | 삭제 commit까지 INSERT 대기 | 등록 commit 전 완료 |
-| RR·힌트 벌크 | 삭제 commit까지 INSERT 대기 | 등록 commit 전 완료 |
-| RC 벌크 | 등록 commit 전 완료 | 등록 commit 전 완료 |
+| 현재 ID별 삭제 | 삭제 commit 전에 등록 완료 | 삭제 commit 전에 등록 완료 |
+| RR 벌크 | 삭제 commit까지 INSERT 대기 | 삭제 commit 전에 등록 완료 |
+| RR·힌트 벌크 | 삭제 commit까지 INSERT 대기 | 삭제 commit 전에 등록 완료 |
+| RC 벌크 | 삭제 commit 전에 등록 완료 | 삭제 commit 전에 등록 완료 |
 
 A의 RR 벌크·힌트에서는 브랜드 인덱스 끝 구간의 supremum 잠금이 INSERT의 `X,INSERT_INTENTION`과 충돌했다. B에서는 기존 삭제 상품 레코드 앞의 `X,GAP`이 있었고 supremum 잠금은 없었다. 대기 기록뿐 아니라 삭제 commit 전 data_locks도 직접 확인했다. B는 등록이 기다리지 않았다는 결과만으로 해석한 사례가 아니다.
 
 원본은 [INSERT 잠금 목록](../week3/implementation-log.md#잠금-목록)과 [INSERT 대기 상세](../week3/implementation-log.md#insert-대기)에 남겼다. 두 fixture의 관찰을 모든 분포·등록 요청의 보장으로 확대하지 않으며, 명시된 잠금 목록만 보고 내부·암묵적 잠금까지 모두 하나라고 설명하지 않는다.
 
 같은 브랜드의 새 등록 차단은 갭 잠금에 의존하지 않는다. 등록은 브랜드 FOR SHARE, 삭제는 FOR UPDATE를 얻으므로 순서가 정해진다. RC 후보에서도 등록이 먼저면 새 상품까지 삭제되고, 삭제가 먼저 commit되면 등록이 거절되며 rollback되면 등록 가능함을 확인했다.
+
+### 비교 표의 각 항목을 확인한 방법
+
+표의 세 항목은 서로 다른 데이터와 검사로 확인했다. 기존 상품 잠금 결과를 새 INSERT 결과로 추정하지 않는다. `바로 완료`는 응답 시간이 0이라는 뜻이 아니라 **삭제 transaction의 commit 전에 요청이 완료됨**을 뜻한다.
+
+#### 다른 브랜드의 기존 상품을 잠글 때
+
+삭제를 실행하고 flush한 뒤 아직 commit하지 않은 상태에서, 별도 JDBC 연결로 다른 브랜드의 기존 상품 PK 하나를 `SELECT ... FOR UPDATE NOWAIT` 조회했다. 잠금을 얻고 행이 실제로 반환되면 비충돌, MySQL 오류 **3572**면 충돌로 판정한다. 그 밖의 SQL 오류나 행 누락은 테스트 실패다. 검사 연결은 rollback해 잠금을 해제한다. 비교에서는 삭제 대상 상품이 잠겨 있다는 것도 검사해 삭제가 실행되지 않아 통과하는 경우를 막는다.
+
+| 표의 방식 | 데이터·판정과 테스트 근거 |
+| --- | --- |
+| ID별 잠금 | 두 브랜드의 상품을 준비하고 실제 BrandFacade.delete 후 다른 브랜드 PK 잠금을 얻는지 검사. `BrandConcurrencyTest.deletingOneBrandDoesNotLockAnExistingProductOfAnotherBrand`. 별도 분포 비교의 CURRENT 경로에서도 네 조건을 관찰 |
+| RR 벌크 | 여섯 분포·통계 조건에서 브랜드 조건 UPDATE 후 검사. `BrandHintComparisonTest.comparesPlansLocksAndCommittedDeletionTime`의 RR_PLAIN. 5/6은 그 실행의 관찰값이며 실행 계획과 무관하게 반드시 5/6이어야 한다고 고정하지 않음 |
+| RR·힌트 벌크 | 같은 여섯 조건의 RR_HINT. EXPLAIN이 기존 브랜드 인덱스를 선택하는지, 검사한 다른 브랜드 상품이 비충돌인지 직접 검사 |
+| RC 벌크 | 같은 여섯 조건의 RC_PLAIN. 실제 연결이 RC인지 확인하고 검사한 다른 브랜드 상품의 비충돌을 직접 검사 |
+
+후보 업무 검증에서도 다른 브랜드 수정의 양방향 실행을 확인한다. RC·RR 힌트는 첫 transaction이 commit하지 않아도 뒤 요청이 완료돼야 한다. RR 일반 벌크는 실제 계획이 전체 스캔이면 대기를 관찰하고, 좁은 검색이면 commit 전 완료를 확인한다. 대기가 생긴 경우에도 commit 뒤 수정 결과와 대상 삭제가 보존되는지 확인한다.
+
+#### 다른 브랜드에 새 상품을 등록할 때
+
+`BrandHintComparisonTest.observesInsertsIntoAnEmptyOtherBrand`가 네 방식 × 기존 삭제 상품 유무의 **8개 조합**을 실행한다. 두 브랜드는 활성이고 브랜드 2에는 상품이 없다. 브랜드 1에는 활성 상품 하나만 넣거나, 여기에 삭제 시각이 2020-01-02인 상품을 하나 더 넣는다. 실제 연결의 격리 수준은 각 전략에 맞게 확인한다.
+
+1. 삭제 transaction에서 브랜드 1 삭제와 상품 삭제 SQL을 실행·flush한다. ID별은 실제 Facade, 대안은 테스트 전용 SQL을 사용한다.
+2. commit 전 별도 root 연결로 product의 data_locks를 읽는다. RR 힌트는 기존 삭제 상품이 없으면 supremum 잠금, 있으면 X,GAP과 supremum 부재를 직접 검사한다.
+3. 별도 worker에서 실제 `ProductFacade.create(brandId=2, ...)`를 호출한다.
+4. 300ms 안에 요청이 완료되면 삭제 commit 전 등록 완료로 판정한다. 완료되지 않았다면 data_lock_waits에서 실제 product INSERT 잠금을 확인한다. 시간 초과만으로 잠금 대기라 판단하지 않으며, 연결·스케줄링·SQL 오류로 검사에 실패하면 테스트도 실패한다.
+5. 삭제를 commit하고 worker가 10초 안에 완료되는지 확인한다. 새 상품의 브랜드가 2이고 미삭제인지, 브랜드 1의 활성 상품이 0개인지, 기존 삭제 상품의 시각이 보존됐는지 DB에서 확인한다. finally에서 worker 종료를 확인한 뒤 데이터를 정리한다.
+
+표의 모든 INSERT 칸은 기대값도 직접 검사한다. ID별·RC는 두 조건 모두 commit 전 완료, RR 벌크·RR 힌트는 기존 삭제 상품이 없을 때만 대기하고 있을 때는 commit 전 완료해야 한다. 이 기대값은 해당 두 fixture의 회귀 기준이며 모든 분포의 보장은 아니다.
+
+#### 삭제 대상인 같은 브랜드에 새 상품을 등록할 때
+
+| 표의 방식 | 직접 실행한 서비스와 테스트 근거 |
+| --- | --- |
+| ID별 잠금 | 실제 BrandFacade·ProductFacade의 공유/배타 잠금과 두 처리 순서 검사. `BrandConcurrencyTest.registrationKeepsSharedBrandLockUntilCommit`, `waitingRegistrationReadsDeletionAfterCommit`, `deletionIncludesProductWhenRegistrationTransactionCommitsFirst`, `rolledBackDeletionReleasesBrandForRegistration` |
+| RR 벌크 | `BrandRrBulkValidationTest`의 registrationFirstIsIncludedAfterItsCommit와 deletionFirstRegistrationObservesCommitOrRollback |
+| RR·힌트 벌크 | `BrandRrHintBulkValidationTest`의 동일한 등록 경쟁 사례 |
+| RC 벌크 | `BrandRcBulkValidationTest`의 동일한 등록 경쟁 사례 |
+
+후보들은 공통 테스트를 재사용하되 실제 격리 수준과 SQL이 다른 Spring bean으로 실행한다. 등록이 먼저면 공유 브랜드 잠금을 유지한 채 삭제를 시작하고, 삭제가 먼저면 배타 브랜드 잠금을 유지한 채 등록을 시작한다. 후보 경쟁은 data_lock_waits에서 해당 brand PK의 대기를 확인한 뒤 commit/rollback한다. ID별 검증은 별도 연결의 NOWAIT 잠금 검사와 실제 서비스 경쟁을 함께 사용한다.
+
+최종 결과는 등록 먼저 commit이면 새 상품까지 삭제, 삭제 먼저 commit이면 등록 NOT_FOUND와 활성 상품 0개, 삭제 rollback이면 등록 성공이다. 따라서 표의 `브랜드 행 잠금으로 막음`은 등록이 영구 금지된다는 의미가 아니라 먼저 진행한 transaction이 끝날 때까지 기다린다는 뜻이다. Controller 진입의 신규 transaction과 바깥 RR transaction에 REQUIRED로 합류하는 경우도 별도로 검사한다.
+
+실제 업무 원자성과 경합을 검증한 범위이며 높은 부하의 지연·모든 상품 행·모든 INSERT 위치를 검증한 결과는 아니다. 세부 실행 결과와 전체 검사 건수는 [구현 기록](../week3/implementation-log.md)에 남긴다.
 
 ## Follow-up
 
@@ -120,6 +164,8 @@ A의 RR 벌크·힌트에서는 브랜드 인덱스 끝 구간의 supremum 잠�
 
 - [ID별·벌크 비교](../../apps/commerce-api/src/test/java/com/loopers/application/brand/BrandBulkDeletionExperimentTest.java)
 - [RC 후보 업무 검증](../../apps/commerce-api/src/test/java/com/loopers/application/brand/BrandRcBulkValidationTest.java)
+- [RR 일반 벌크 후보 업무 검증](../../apps/commerce-api/src/test/java/com/loopers/application/brand/BrandRrBulkValidationTest.java)
+- [현재 ID별 등록·삭제 경쟁](../../apps/commerce-api/src/test/java/com/loopers/application/brand/BrandConcurrencyTest.java)
 - [RR 힌트 후보 업무 검증](../../apps/commerce-api/src/test/java/com/loopers/application/brand/BrandRrHintBulkValidationTest.java)
 - [계획·잠금·시간·INSERT 비교](../../apps/commerce-api/src/test/java/com/loopers/application/brand/BrandHintComparisonTest.java)
 - [3주차 설계](../week3/design.md#22-상품-등록과-브랜드-삭제)

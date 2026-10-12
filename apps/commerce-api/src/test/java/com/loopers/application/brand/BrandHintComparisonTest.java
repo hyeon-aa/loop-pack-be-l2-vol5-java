@@ -128,8 +128,17 @@ class BrandHintComparisonTest {
                 long inserted = pending.getFirst().get(10, TimeUnit.SECONDS);
                 assertThat(jdbc.queryForObject("select deleted_at from product where id=?", Object.class, inserted))
                     .isNull();
-                if (strategy == Strategy.RC_PLAIN) {
-                    assertThat(blocked[0]).isFalse();
+                boolean expectedWait = !oldDeletedBoundary
+                    && (strategy == Strategy.RR_PLAIN || strategy == Strategy.RR_HINT);
+                assertThat(blocked[0]).as("strategy=%s, oldDeletedBoundary=%s", strategy, oldDeletedBoundary)
+                    .isEqualTo(expectedWait);
+                assertThat(jdbc.queryForObject("select count(*) from product where brand_id=1 and deleted_at is null",
+                    Integer.class)).isZero();
+                assertThat(jdbc.queryForObject("select brand_id from product where id=?", Long.class, inserted))
+                    .isEqualTo(2L);
+                if (oldDeletedBoundary) {
+                    assertThat(jdbc.queryForObject("select deleted_at from product where name='old'",
+                        java.sql.Timestamp.class)).isEqualTo(java.sql.Timestamp.valueOf("2020-01-02 00:00:00"));
                 }
                 System.out.printf("HINT_INSERT strategy=%s oldDeletedBoundary=%s blocked=%s%n",
                     strategy, oldDeletedBoundary, blocked[0]);

@@ -194,28 +194,48 @@ class BrandRcBulkValidationTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void anotherBrandUpdateAndDeletionCanCompleteInEitherDirection(boolean deletionFirst) throws Exception {
+    void anotherBrandUpdateAndDeletionFollowThePlanInEitherDirection(boolean deletionFirst) throws Exception {
         Fixture f = fixture();
         Runnable delete = () -> deletion.delete(f.brand());
         Runnable update = () -> products.update(f.otherProduct(), "other changed", 3000);
+        boolean expectedWait = false;
+        if (allowsPlanDependentUnrelatedWait()) {
+            var plan = jdbc.queryForList("explain update product set deleted_at=UTC_TIMESTAMP(6), "
+                + "updated_at=UTC_TIMESTAMP(6) where brand_id=? and deleted_at is null", f.brand()).getFirst();
+            expectedWait = "PRIMARY".equals(plan.get("key")) || "ALL".equals(plan.get("type"));
+        }
+        boolean waits = expectedWait;
         var executor = Executors.newSingleThreadExecutor();
+        var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
         try {
             tx(candidate.getExpectedIsolationLevel()).executeWithoutResult(status -> {
                 (deletionFirst ? delete : update).run();
                 var worker = executor.submit(deletionFirst ? update : delete);
+                futures.add(worker);
+                if (waits) {
+                    awaitLockWait("product", f.otherProduct());
+                    assertThat(worker.isDone()).isFalse();
+                    return;
+                }
                 try {
                     worker.get(10, TimeUnit.SECONDS); // Must complete while the first transaction still holds its lock.
                 } catch (Exception exception) {
                     throw new IllegalStateException("unrelated brand operation blocked or failed", exception);
                 }
             });
+            futures.getFirst().get(10, TimeUnit.SECONDS);
         } finally {
+            futures.forEach(future -> future.cancel(true));
             executor.shutdownNow();
             assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
         }
         assertDeleted(f, true);
         assertThat(jdbc.queryForObject("select name from product where id=?", String.class, f.otherProduct()))
             .isEqualTo("other changed");
+    }
+
+    protected boolean allowsPlanDependentUnrelatedWait() {
+        return false;
     }
 
     private ErrorType race(Runnable first, Runnable second, String table, long id, boolean rollback) throws Exception {
@@ -329,8 +349,11 @@ class BrandRcBulkValidationTest {
         @Primary
         RcBulkFacade rcBulkFacade(BrandService brands, ProductRepository products, EntityManager em, JdbcTemplate jdbc,
                                  @Value("${candidate.strategy:rc}") String strategy) {
-            return strategy.equals("rr-hint") ? new RrHintBulkFacade(brands, products, em, jdbc)
-                : new RcBulkFacade(brands, products, em, jdbc);
+            return switch (strategy) {
+                case "rr-hint" -> new RrHintBulkFacade(brands, products, em, jdbc);
+                case "rr-plain" -> new RrBulkFacade(brands, products, em, jdbc);
+                default -> new RcBulkFacade(brands, products, em, jdbc);
+            };
         }
     }
 
@@ -410,6 +433,28 @@ class BrandRcBulkValidationTest {
             return "update product FORCE INDEX (idx_product_brand_deleted) "
                 + "set deleted_at=UTC_TIMESTAMP(6), updated_at=UTC_TIMESTAMP(6) "
                 + "where brand_id=? and deleted_at is null";
+        }
+
+        @Override
+        @Transactional(isolation = Isolation.REPEATABLE_READ)
+        public void delete(Long id) {
+            super.delete(id);
+        }
+    }
+
+    static class RrBulkFacade extends RcBulkFacade {
+        RrBulkFacade(BrandService brands, ProductRepository products, EntityManager em, JdbcTemplate jdbc) {
+            super(brands, products, em, jdbc);
+        }
+
+        @Override
+        public String getExpectedIsolation() {
+            return "REPEATABLE-READ";
+        }
+
+        @Override
+        public int getExpectedIsolationLevel() {
+            return TransactionDefinition.ISOLATION_REPEATABLE_READ;
         }
 
         @Override
