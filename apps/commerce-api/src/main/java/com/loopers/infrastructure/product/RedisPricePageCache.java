@@ -8,11 +8,13 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 
 import java.time.Duration;
 import java.util.Optional;
 
 @Component
+@ConditionalOnProperty(name = "commerce.cache.price.provider", havingValue = "redis", matchIfMissing = true)
 @Slf4j
 public class RedisPricePageCache implements PricePageCache {
     private final StringRedisTemplate redis;
