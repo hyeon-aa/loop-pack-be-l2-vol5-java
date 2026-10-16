@@ -575,3 +575,20 @@ SQL 캡처로 좋아요 집계 대신 `select product_id, like_count from produc
 
 [측정 · 100k-brand-dedup-api.json](measurements/index-results.json). 직전 측정([100k-counter-api.json](measurements/like-counter-results.json), 중앙값 17.84ms·13.09ms, SELECT 5개)보다 낮게 나왔지만, 별도 JVM·소표본 간 비교이고 브랜드 PK 단건 조회 자체가 이미 저렴해서 이 차이 전부를 이 변경의 효과로 단정하지 않는다. SQL 개수를 줄였다는 사실과 체감 가능한 지연 개선을 구분한다.
 
+<a id="product-list-personal-like-state"></a>
+
+## 27. 상품 목록의 내 좋아요 표시
+
+목록 항목에 isLiked를 추가했다. ProductListQueryService가 공통 ProductQueryService의 결과를 받아 사용자 확인과 페이지별 개인 관계 조회를 조정한다. LikeRepository는 `user_id = ? AND product_id IN (...)`으로 해당 페이지의 좋아요한 상품 ID만 한 번에 반환한다. 빈 페이지는 관계 SQL을 실행하지 않는다. 원본 관계와 카운터 쓰기·정렬·캐시 키/값/TTL은 유지한다. [ADR 0023](../adr/0023-product-list-personal-like-state.md).
+
+| 검증 | 확인한 결과 |
+| --- | --- |
+| 사용자 A/B·Redis·로컬 hit | 같은 상품 캐시에서도 각자 다른 isLiked, 공통 캐시 값 유지·재조회/무효화 없음 |
+| 등록·중복 등록·취소 | 실제 API 완료 뒤 GET의 하트와 현재 카운터 일치 |
+| rollback | 취소 중에는 false, rollback 후 새 조회는 원래 true, 공통 캐시 유지 |
+| 페이지·정렬 | 선택된 페이지 ID만 전달, 순서 유지, 다음/빈 페이지·세 정렬 |
+| 익명·입력 오류 | 헤더 없음 false, 없는/삭제된 사용자 404, 숫자 아닌 헤더 400 |
+| 오류 처리 | 개인 관계 DB 오류를 false로 숨기지 않고 전파 |
+
+전체 310건은 현재 개인화 구현을 포함한 회귀 검사다. 22~23절은 같은 JAR로 다시 실행했으며 사용자 95의 isLiked를 독립 seed 계산과 매 응답 비교했다. 일반 페이지는 12개 true/8개 false, 쏠림 페이지는 20개 false였다. 다른 개인 관계 분포까지 대표한다고 주장하지 않는다. 헤더 없는 조회는 별도 표로 구분했다. 이전 개인화 전 원본 JSON은 당시 측정으로 남기며 현재 개인화 경로의 수치로 사용하지 않는다. 좋아요 변경과 겹쳐 이미 시작한 트랜잭션까지 최신이라고 주장하지 않는다.
+

@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Set;
 
 @RequiredArgsConstructor
 @Component
@@ -94,6 +95,18 @@ public class LikeRepositoryImpl implements LikeRepository {
             throw new IllegalStateException("상품 좋아요 카운터가 누락되었습니다. 초기화 상태를 확인하세요.");
         }
         return counts;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<Long> findLikedProductIds(Long userId, List<Long> productIds) {
+        if (productIds.isEmpty()) {
+            return Set.of();
+        }
+        var ids = new NamedParameterJdbcTemplate(jdbc).queryForList(
+            "select product_id from product_like where user_id = :userId and product_id in (:ids)",
+            Map.of("userId", userId, "ids", new HashSet<>(productIds)), Long.class);
+        return Set.copyOf(ids);
     }
 
     private void adjustCount(Long productId, int delta) {

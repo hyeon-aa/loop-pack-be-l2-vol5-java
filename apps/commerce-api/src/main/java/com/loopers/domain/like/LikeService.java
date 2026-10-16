@@ -6,6 +6,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @RequiredArgsConstructor
 @Component
@@ -38,4 +39,8 @@ public class LikeService {
         return likeRepository.countByProductIds(productIds);
     }
 
+    @Transactional(readOnly = true)
+    public Set<Long> findLikedProductIds(Long userId, List<Long> productIds) {
+        return likeRepository.findLikedProductIds(userId, productIds);
+    }
 }
