@@ -17,6 +17,9 @@ public class ProductRepositoryImpl implements ProductRepository {
     private final ProductJpaRepository productJpaRepository;
 
     @Override
+    public Optional<Long> findBrandId(Long productId) { return productJpaRepository.findBrandId(productId); }
+
+    @Override
     public ProductModel save(ProductModel product) {
         return productJpaRepository.save(product);
     }
@@ -52,6 +55,11 @@ public class ProductRepositoryImpl implements ProductRepository {
     @Override
     public List<ProductModel> findActiveByIds(Collection<Long> ids) {
         return productJpaRepository.findByIdInAndDeletedAtIsNull(ids);
+    }
+
+    @Override
+    public List<Long> findActiveIds(Long brandId, Collection<Long> ids) {
+        return productJpaRepository.findActiveIds(brandId, ids);
     }
 
     @Override

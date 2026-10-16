@@ -575,6 +575,28 @@ SQL 캡처로 좋아요 집계 대신 `select product_id, like_count from produc
 
 [측정 · 100k-brand-dedup-api.json](measurements/index-results.json). 직전 측정([100k-counter-api.json](measurements/like-counter-results.json), 중앙값 17.84ms·13.09ms, SELECT 5개)보다 낮게 나왔지만, 별도 JVM·소표본 간 비교이고 브랜드 PK 단건 조회 자체가 이미 저렴해서 이 차이 전부를 이 변경의 효과로 단정하지 않는다. SQL 개수를 줄였다는 사실과 체감 가능한 지연 개선을 구분한다.
 
+<a id="price-cache-basic"></a>
+
+## 21. 가격순 상품 페이지와 기본 캐시 검증
+
+대상은 브랜드 필터·가격순·page=0·size=20이다. 응답은 items·page·size이며 상품 페이지를 고른 뒤 해당 ID의 좋아요 수와 선택 사용자 헤더의 isLiked를 붙인다. 총상품수는 세거나 반환하지 않는다. 캐시에는 상품 ID·이름·가격·생성 시각만 저장한다. [ADR 0021](../adr/0021-price-page-cache-aside-with-after-commit-eviction.md), [목록 계약 ADR 0022](../adr/0022-product-list-without-total-count.md), [쉬운 흐름](cache-basics.md).
+
+가격순 개인화 단계의 `:apps:commerce-api:check :apps:commerce-api:bootJar`는 55 suites·310건, 실패/오류/skip 0으로 통과했다. Checkstyle Main/Test와 ArchUnit을 포함한다. [해당 단계 검사 집계](measurements/price-cache-personal-validation.json). JAR SHA-256은 `93281c5be8991704062b40a7ec5fd55b79ef0bf270c22df17adb97aca49193d2`다.
+
+| 검증 | 실제 확인한 범위 |
+| --- | --- |
+| 응답·페이지 | 세 정렬의 totalCount 부재, page·size, 동점·삭제 제외·다음/빈 페이지·입력 오류 |
+| Redis 캐시 통합 20건 | DB/miss/hit 일치, TTL, 캐시 값의 totalCount/좋아요/isLiked/재고/브랜드 부재 |
+| 변경 | 실제 관리자 PUT 뒤 고객 GET의 가격·이름·순서, 페이지 밖 상품·생성·삭제·브랜드 삭제 |
+| live 합성 | 좋아요·재고·브랜드 표시 변경 시 가격순 페이지 재조회 없이 현재 좋아요 수·isLiked·브랜드 합성 |
+| 트랜잭션 | commit 후 DEL, rollback 유지, 쓰기 트랜잭션 안의 미확정 캐시 저장 방지 |
+| 경쟁/실패 | 래치로 통제한 늦은 채움, 강제 DEL 실패, 삭제 비노출, 만료 뒤 회복 |
+| 실제 장애 | 전용 Redis Testcontainer stop/start, DB 우회·가격 변경 commit 유지·명시적 자신의 키 DEL 뒤 재채움 |
+| 오류/범위 | 손상 JSON fallback, DB 페이지/활성 ID 오류 전파, 미지원 페이지·크기·정렬·무필터 우회 |
+| 로컬 | 통합 6건·unit 2건의 변경·삭제·좋아요 합성·rollback·저장 후 만료 |
+
+주문 금액·재고·포인트의 기존 회귀도 전체 검사에 포함된다. Redis 장애 테스트는 사용자의 공유 Redis가 아닌 별도 컨테이너를 중단한다. TTL 회복 테스트는 자신의 키를 100ms로 단축하며 기본 300초를 실제 기다린 것은 아니다. 재연결만으로 즉시 최신이라는 보장은 하지 않는다. 테스트 수와 API 측정 요청 수는 합산하지 않는다.
+
 <a id="product-list-personal-like-state"></a>
 
 ## 27. 상품 목록의 내 좋아요 표시

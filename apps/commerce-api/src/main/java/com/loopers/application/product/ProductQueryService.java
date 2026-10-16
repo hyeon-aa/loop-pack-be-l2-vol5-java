@@ -8,7 +8,6 @@ import com.loopers.domain.product.ProductModel;
 import com.loopers.domain.product.ProductService;
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
-import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,7 +18,6 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
-@RequiredArgsConstructor
 @Component
 public class ProductQueryService {
 
@@ -28,6 +26,15 @@ public class ProductQueryService {
     private final BrandService brandService;
     private final ProductService productService;
     private final LikeService likeService;
+    private final PricePageReader pricePages;
+
+    public ProductQueryService(BrandService brandService, ProductService productService, LikeService likeService,
+        PricePageReader pricePages) {
+        this.brandService = brandService;
+        this.productService = productService;
+        this.likeService = likeService;
+        this.pricePages = pricePages;
+    }
 
     @Transactional(readOnly = true)
     public CustomerProductInfo get(Long productId) {
@@ -45,6 +52,13 @@ public class ProductQueryService {
         validatePage(page, size);
         BrandModel brand = brandId == null ? null : brandService.get(brandId);
         if (sort == ProductSort.PRICE_ASC) {
+            if (brand != null) {
+                var stored = pricePages.get(brandId, page, size);
+                var counts = likeService.countByProductIds(stored.items().stream().map(i -> i.id()).toList());
+                var items = stored.items().stream().map(i -> new CustomerProductInfo(i.id(), BrandInfo.from(brand),
+                    i.name(), i.price(), counts.getOrDefault(i.id(), 0L), i.createdAt())).toList();
+                return new ProductPage<>(items, page, size);
+            }
             List<ProductModel> candidates = productService.findActiveByPriceAsc(brandId, page, size);
             return new ProductPage<>(enrich(candidates, brand), page, size);
         }

@@ -68,3 +68,21 @@ springdoc:
   api-docs:
     enabled: false
 
+---
+spring.config.activate.on-profile: local, benchmark
+
+commerce:
+  cache:
+    price:
+      enabled: true
+      ttl-seconds: 300
+
+---
+spring.config.activate.on-profile: local
+
+commerce.cache.price.prefix: commerce:price-page:v3:local
+
+---
+spring.config.activate.on-profile: benchmark
+
+commerce.cache.price.prefix: commerce:price-page:v3:benchmark

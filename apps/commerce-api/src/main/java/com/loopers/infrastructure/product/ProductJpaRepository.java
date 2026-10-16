@@ -13,6 +13,8 @@ import java.util.List;
 import java.util.Optional;
 
 public interface ProductJpaRepository extends JpaRepository<ProductModel, Long> {
+    @Query("select p.brandId from ProductModel p where p.id=:id")
+    Optional<Long> findBrandId(@Param("id") Long id);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from ProductModel p where p.id = :id")
     Optional<ProductModel> findForUpdate(@Param("id") Long id);
@@ -32,5 +34,6 @@ public interface ProductJpaRepository extends JpaRepository<ProductModel, Long> 
 
     List<ProductModel> findByIdInAndDeletedAtIsNull(Collection<Long> ids);
 
-
+    @Query("select p.id from ProductModel p where p.brandId = :brandId and p.id in :ids and p.deletedAt is null")
+    List<Long> findActiveIds(@Param("brandId") Long brandId, @Param("ids") Collection<Long> ids);
 }

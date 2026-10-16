@@ -7,6 +7,8 @@ import java.util.Optional;
 public interface ProductRepository {
     ProductModel save(ProductModel product);
 
+    Optional<Long> findBrandId(Long productId);
+
     Optional<ProductModel> find(Long id);
 
     Optional<ProductModel> findForUpdate(Long id);
@@ -18,6 +20,8 @@ public interface ProductRepository {
     List<ProductModel> findActiveByBrandId(Long brandId);
 
     List<ProductModel> findActiveByIds(Collection<Long> ids);
+
+    List<Long> findActiveIds(Long brandId, Collection<Long> ids);
 
     List<ProductModel> findActiveByBrandIdForUpdate(Long brandId);
 }

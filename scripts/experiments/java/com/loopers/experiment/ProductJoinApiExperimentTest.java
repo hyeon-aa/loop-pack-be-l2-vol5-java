@@ -6,6 +6,7 @@ import com.loopers.application.brand.BrandInfo;
 import com.loopers.application.product.CustomerProductInfo;
 import com.loopers.application.product.ProductPage;
 import com.loopers.application.product.ProductQueryService;
+import com.loopers.application.product.PricePageReader;
 import com.loopers.application.product.ProductSort;
 import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.like.LikeService;
@@ -179,8 +180,8 @@ class ProductJoinApiExperimentTest {
         @Bean
         @Primary
         ProductQueryService experimentQuery(BrandService brands, ProductService products, LikeService likes,
-            JdbcTemplate jdbc, @Qualifier("productQueryService") ProductQueryService split) {
-            return new JoinedQuery(brands, products, likes, jdbc, split);
+            JdbcTemplate jdbc, PricePageReader pricePages, @Qualifier("productQueryService") ProductQueryService split) {
+            return new JoinedQuery(brands, products, likes, jdbc, split, pricePages);
         }
     }
 
@@ -191,8 +192,8 @@ class ProductJoinApiExperimentTest {
         private final ProductQueryService split;
 
         JoinedQuery(BrandService brands, ProductService products, LikeService likes,
-            JdbcTemplate jdbc, ProductQueryService split) {
-            super(brands, products, likes);
+            JdbcTemplate jdbc, ProductQueryService split, PricePageReader pricePages) {
+            super(brands, products, likes, pricePages);
             this.brands = brands;
             this.products = products;
             this.jdbc = jdbc;

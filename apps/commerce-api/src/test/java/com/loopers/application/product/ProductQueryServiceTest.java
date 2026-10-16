@@ -20,6 +20,9 @@ import static org.mockito.Mockito.when;
 class ProductQueryServiceTest {
 
     @Mock
+    private PricePageReader pricePages;
+
+    @Mock
     private BrandService brandService;
 
     @Mock
@@ -54,9 +57,11 @@ class ProductQueryServiceTest {
         when(likeService.countByProductIds(List.of(1L, 2L))).thenReturn(Map.of(1L, 1L, 2L, 3L));
 
         ProductPage<CustomerProductInfo> result = new ProductQueryService(
-            brandService, productService, likeService
+            brandService, productService, likeService, pricePages
         ).getList(null, 0, 1, ProductSort.LIKES_DESC);
 
+        assertThat(result.page()).isZero();
+        assertThat(result.size()).isEqualTo(1);
         assertThat(result.items()).extracting(CustomerProductInfo::id).containsExactly(2L);
         assertThat(result.items().getFirst().likeCount()).isEqualTo(3L);
     }
