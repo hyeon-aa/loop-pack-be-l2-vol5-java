@@ -37,6 +37,16 @@ spring:
       on-profile: local, test
 
 ---
+spring.config.activate.on-profile: benchmark
+
+server:
+  port: 8082
+
+management:
+  server:
+    port: 8083
+
+---
 spring:
   config:
     activate:
@@ -57,3 +67,4 @@ spring:
 springdoc:
   api-docs:
     enabled: false
+
