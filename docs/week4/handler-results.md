@@ -88,7 +88,7 @@ VS Code 확장 측정에서 key 138→140·next 692→810이 나왔다. 실제 �
 물리 디스크 I/O·실제 트리 높이·페이지 방문·MVCC 내부 재조회 횟수, 실제 상품 쓰기의 Handler, 과거 모든 HTTP 요청의 세션 카운터는 측정하지 않았다. 시간표나 실행 계획 rows에서 Handler를 추산해 측정했다고 기록하지 않는다. 최초 HTTP 기준선·과거 커서 실험은 각각의 원본 기록으로 유지하며 이 문서는 현재 01~14 비교 흐름을 대상으로 한다.
 
 
-## 10만 건 추가 검증 (2026-10-14)
+## 10만 건 추가 검증
 
 [원본 · 100k-read-write-skew.json](measurements/index-results.json)의 같은 세션 일반 SELECT 전후 차분이다. 자동 COUNT는 없고 EXPLAIN ANALYZE는 측정 밖이다. 복제 비교의 상품 날짜 출력 정규화·좋아요 ORDER BY는 implementation-log 13절에 명시했다.
 

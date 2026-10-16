@@ -1,4 +1,4 @@
-> 2026-10-14 갱신: 좋아요 수를 `product_like_count`로 비정규화하는 결정을 채택했다([ADR 0020](../adr/0020-like-count-denormalized-counter.md)). 실제 카운터 코드·3개 benchmark DB 초기화·전체 검사·실제 API 재측정까지 완료했다. 최신 변경·검증 순서는 [구현 기록 16절](implementation-log.md#counter-production)을 참고한다. 아래 이전 단계의 미적용 서술은 당시 기록이다.
+> 갱신: 좋아요 수를 `product_like_count`로 비정규화하는 결정을 채택했다([ADR 0020](../adr/0020-like-count-denormalized-counter.md)). 실제 카운터 코드·3개 benchmark DB 초기화·전체 검사·실제 API 재측정까지 완료했다. 최신 변경·검증 순서는 [구현 기록 16절](implementation-log.md#counter-production)을 참고한다. 아래 이전 단계의 미적용 서술은 당시 기록이다.
 
 > 현재 benchmark DB는 기존 상품·좋아요 인덱스와 product_like_count를 사용한다. 신규 DB seed 이후 카운터 backfill이 필요하다. 실험 후보 인덱스의 상태는 각 실험 절을 참고하며 현재 운영 구성과 구분한다.
 
