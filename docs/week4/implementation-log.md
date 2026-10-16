@@ -160,6 +160,39 @@ id ASC로 바꾼 보조 조회는 same price/time의 1407 → 4407 → 7407을 �
 
 finally에서 이번 임시 후보만 삭제하고 기존 인덱스 이름·열·방향이 유지됐음을 확인했다. 모델·운영 코드·상품 데이터 변경은 없으며 ANALYZE TABLE로 통계는 갱신됐다. 05 전체 정렬 인덱스는 유지한다. SQL 파일은 임시 후보가 이미 삭제된 상태에서 재생성 절차와 관찰 결과를 설명한다.
 
+## 5. 이름 포함·제외 커버링 비교
+
+scripts/compare-week4-covering.py로 기존 05 인덱스에서 SELECT의 name만 포함·제외했다. WHERE·ORDER BY·LIMIT은 같고 힌트 없이 같은 인덱스를 선택했다. 준비 포함 총 82회에서 공통 컬럼·순서가 seed 기대값과 같았고 이름 포함 조회의 이름도 확인했다. [원본 · covering-name.json](measurements/index-results.json), [직접 확인 SQL](../../scripts/sql/week4-07-covering.sql).
+
+| 확인                  | 이름 포함             | 이름 제외                |
+| --------------------- | --------------------- | ------------------------ |
+| EXPLAIN Extra         | Using index condition | Using where; Using index |
+| ANALYZE 접근          | Index lookup          | Covering index lookup    |
+| 실제 접근 rows        | 20                    | 20                       |
+| Sort                  | 없음                  | 없음                     |
+| Handler key·next 증가 | 1·19                  | 1·19                     |
+| SQL 중앙값            | 0.136ms               | 0.116ms                  |
+
+방식별 준비 10회·측정 30회로 먼저 실행하는 방식을 교대했다. Handler는 자동 COUNT 없는 클라이언트의 별도 SELECT 전후 측정이다. 인덱스·데이터·통계 변경은 없었다. 이름 제외는 반환 컬럼을 줄인 원리 실험이며 API 응답 개선안은 아니다.
+
+### 5.1 이름을 인덱스에 포함하는 대안
+
+사용자 제안으로 이름을 맨 뒤에 포함한 idx_product_brand_price_name을 임시 생성하고 ANALYZE TABLE 후 05와 비교했다. 이름을 포함한 같은 원래 쿼리에서만 비교하며 FORCE INDEX로 경로를 분리했다. 힌트 없는 선택도 원본에 저장했다. [원본 · covering-name-index.json](measurements/index-results.json).
+
+| 확인                  | 05 인덱스    | 이름 포함 인덱스      |
+| --------------------- | ------------ | --------------------- |
+| ANALYZE 접근          | Index lookup | Covering index lookup |
+| 실제 접근 rows·Sort   | 20·없음      | 20·없음               |
+| Handler key·next 증가 | 1·19         | 1·19                  |
+| SQL 중앙값            | 0.127ms      | 0.110ms               |
+| 인덱스 할당량         | 400KiB       | 1,552KiB              |
+
+방식별 준비 10회·측정 30회, 준비 포함 총 82회에서 반환된 전체 필드·순서가 앞선 seed 검증 결과와 같았다. 동일 세션에서 실행 순서를 교대했다. 임시 후보는 finally에서 삭제했고 기존 상품 인덱스가 남았음을 확인했다. 모델·운영 조회 코드는 변경하지 않았다.
+
+시간은 서로 다른 두 실험을 합쳐 비교하지 않는다. 이름 인덱스 비교에는 05 최대 12.93ms·이름 후보 최대 9.83ms의 변동도 있어 작은 중앙값 차이를 안정적인 API 성능 이득으로 주장하지 않는다. 실제 API·상품 쓰기·MVCC 내부 기본키 접근은 측정하지 않았다. 페이지 할당량은 통계 기반이며 정확한 유효 바이트가 아니다. 이름 후보의 공간·관리 비용과 실제 이득을 추가 검토하기 전까지 05를 유지한다.
+
+커버링은 인덱스 탐색을 없애는 것이 아니라 필요한 컬럼을 얻기 위한 실제 행 재조회를 줄인다는 이해를 design에 보강했다. 사용자 질문으로 기존 브랜드 인덱스와 가격 인덱스의 왼쪽 선두 컬럼 중복을 다음 검토 후보로 기록했다. 실제 코드의 브랜드 삭제 대상 ID 조회에는 ORDER BY id가 있어 긴 인덱스의 가격 순서와 다른 점을 확인했다. 이 문서 보강에서 DB 변경·대체 성능 측정은 하지 않았다.
+
 ## 17. 브랜드 중복 조회 제거
 
 `ProductQueryService.getList()`가 `brandService.get(brandId)`로 브랜드를 확인한 뒤, `enrich()` 안에서 `brandService.getAllActiveByIds(...)`로 같은 브랜드를 다시 조회하고 있었다. 9절에서 이미 업무 SELECT 5개를 나열했지만("브랜드 확인·COUNT·상품 페이지·브랜드 정보·좋아요 집계") 그중 "브랜드 확인"과 "브랜드 정보"가 중복이라는 점은 그때 짚지 않았다.
