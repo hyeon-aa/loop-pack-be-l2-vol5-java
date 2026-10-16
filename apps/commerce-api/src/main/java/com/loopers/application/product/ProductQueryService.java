@@ -20,6 +20,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -27,6 +28,9 @@ import java.util.stream.Collectors;
 public class ProductQueryService {
 
     private static final int MAX_PAGE_SIZE = 100;
+    private static final Comparator<CustomerProductInfo> LATEST_FIRST =
+        Comparator.comparing(CustomerProductInfo::createdAt).reversed()
+            .thenComparing(CustomerProductInfo::id, Comparator.reverseOrder());
 
     private final BrandService brandService;
     private final ProductService productService;
@@ -75,38 +79,58 @@ public class ProductQueryService {
             List<ProductModel> candidates = productService.findActiveByPriceAsc(brandId, page, size);
             return new ProductPage<>(enrich(candidates, brand), page, size);
         }
+        if (sort == ProductSort.LIKES_DESC || sort == ProductSort.POPULAR) {
+            return byLikes(brandId, brand, page, size, sort);
+        }
+        // 최신순만 남은 앱 정렬 경로다.
+        List<ProductModel> candidates = brandId == null
+            ? productService.findAllActive()
+            : productService.findActiveByBrandId(brandId);
+        List<CustomerProductInfo> products = enrich(candidates, brand).stream().sorted(LATEST_FIRST).toList();
+        int fromIndex = Math.min(page * size, products.size());
+        int toIndex = Math.min(fromIndex + size, products.size());
+        return new ProductPage<>(products.subList(fromIndex, toIndex), page, size);
+    }
+
+    /**
+     * 좋아요순·인기순은 DB가 정렬해 한 페이지의 ID만 돌려준다. 브랜드 상품 전체를 엔티티로 올려
+     * 앱에서 정렬하지 않으므로 앱 메모리는 페이지 크기만큼만 쓴다. 같은 읽기 트랜잭션의 스냅샷에서
+     * ID와 상품을 읽어 순서와 표시 값이 어긋나지 않는다.
+     */
+    private ProductPage<CustomerProductInfo> byLikes(Long brandId, BrandModel brand, int page, int size,
+        ProductSort sort) {
         boolean cacheRanking = popularCacheEnabled && sort == ProductSort.POPULAR
             && TransactionSynchronizationManager.isCurrentTransactionReadOnly();
         if (cacheRanking) {
             var cached = popularPages.get(brandId);
             if (cached.isPresent()) {
-                var ids = cached.get().ids();
-                var byId = ids.isEmpty() ? Map.<Long, ProductModel>of()
-                    : productService.findActiveByIds(ids).stream()
-                        .filter(product -> brandId.equals(product.getBrandId()))
-                        .collect(Collectors.toMap(ProductModel::getId, Function.identity()));
-                if (byId.size() == ids.size()) {
-                    var ordered = ids.stream().map(byId::get).toList();
+                var ordered = activeInOrder(cached.get().ids(), brandId);
+                if (ordered.size() == cached.get().ids().size()) {
                     return new ProductPage<>(enrich(ordered, brand), page, size);
                 }
             }
         }
-        List<ProductModel> candidates = brandId == null
-            ? productService.findAllActive()
-            : productService.findActiveByBrandId(brandId);
-        List<CustomerProductInfo> products = enrich(candidates, brand).stream().sorted(comparator(sort)).toList();
-        int fromIndex = Math.min(page * size, products.size());
-        int toIndex = Math.min(fromIndex + size, products.size());
-        var selected = products.subList(fromIndex, toIndex);
+        var ids = productService.findVisibleIdsByLikesDesc(brandId, page, size);
+        var selected = enrich(activeInOrder(ids, brandId), brand);
         if (cacheRanking) { popularPages.put(brandId, new PopularPage(selected.stream().map(CustomerProductInfo::id).toList())); }
         return new ProductPage<>(selected, page, size);
+    }
+
+    private List<ProductModel> activeInOrder(List<Long> ids, Long brandId) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, ProductModel> byId = productService.findActiveByIds(ids).stream()
+            .filter(product -> brandId == null || brandId.equals(product.getBrandId()))
+            .collect(Collectors.toMap(ProductModel::getId, Function.identity()));
+        return ids.stream().map(byId::get).filter(Objects::nonNull).toList();
     }
 
     @Transactional(readOnly = true)
     public List<CustomerProductInfo> getActiveByIdsInOrder(List<Long> productIds) {
         Map<Long, CustomerProductInfo> byId = enrich(productService.findActiveByIds(productIds)).stream()
             .collect(Collectors.toMap(CustomerProductInfo::id, Function.identity()));
-        return productIds.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
+        return productIds.stream().map(byId::get).filter(Objects::nonNull).toList();
     }
 
     private List<CustomerProductInfo> enrich(Collection<ProductModel> products) {
@@ -138,19 +162,6 @@ public class ProductQueryService {
             ))
             .filter(product -> product.brand() != null)
             .toList();
-    }
-
-    private static Comparator<CustomerProductInfo> comparator(ProductSort sort) {
-        return switch (sort) {
-            case LATEST -> Comparator.comparing(CustomerProductInfo::createdAt).reversed()
-                .thenComparing(CustomerProductInfo::id, Comparator.reverseOrder());
-            case PRICE_ASC -> Comparator.comparingLong(CustomerProductInfo::price)
-                .thenComparing(CustomerProductInfo::createdAt, Comparator.reverseOrder())
-                .thenComparing(CustomerProductInfo::id, Comparator.reverseOrder());
-            case LIKES_DESC, POPULAR -> Comparator.comparingLong(CustomerProductInfo::likeCount).reversed()
-                .thenComparing(CustomerProductInfo::createdAt, Comparator.reverseOrder())
-                .thenComparing(CustomerProductInfo::id, Comparator.reverseOrder());
-        };
     }
 
     private static void validatePage(int page, int size) {

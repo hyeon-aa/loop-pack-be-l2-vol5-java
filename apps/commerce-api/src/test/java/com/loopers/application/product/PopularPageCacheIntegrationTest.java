@@ -127,7 +127,7 @@ class PopularPageCacheIntegrationTest {
         var pageB = lists.getList(b, brand, 0, 20, ProductSort.POPULAR);
         assertThat(pageB.items()).extracting(ProductListItemInfo::isLiked).containsExactly(true, false);
         assertThat(pageB.items()).extracting(item -> item.product().likeCount()).containsExactly(1L, 1L);
-        verify(repository, never()).findActiveByBrandId(brand);
+        verify(repository, never()).findVisibleIdsByLikesDesc(brand, 0, 20);
         verify(repository).findActiveByIds(List.of(second, first));
         assertThat(redis.opsForValue().get(key(brand)))
             .doesNotContain("isLiked", "userId", "likeCount", "price", "name");
@@ -208,7 +208,7 @@ class PopularPageCacheIntegrationTest {
         assertThat(current.price()).isEqualTo(500);
         assertThat(current.brand().name()).isEqualTo("after brand");
         assertThat(redis.opsForValue().get(key(brand))).isEqualTo(ranking);
-        verify(repository, never()).findActiveByBrandId(brand);
+        verify(repository, never()).findVisibleIdsByLikesDesc(brand, 0, 20);
         query.getList(brand, 0, 20, ProductSort.PRICE_ASC);
         String priceKey = "likes-price-cache-it:brand:" + brand + ":sort:price_asc:page:0:size:20";
         String price = redis.opsForValue().get(priceKey);
@@ -325,7 +325,7 @@ class PopularPageCacheIntegrationTest {
         assertThatThrownBy(() -> ranked(brand)).isInstanceOf(DataAccessResourceFailureException.class);
         reset(repository);
         redis.delete(key(brand));
-        doThrow(new DataAccessResourceFailureException("DB failed")).when(repository).findActiveByBrandId(brand);
+        doThrow(new DataAccessResourceFailureException("DB failed")).when(repository).findVisibleIdsByLikesDesc(brand, 0, 20);
         assertThatThrownBy(() -> ranked(brand)).isInstanceOf(DataAccessResourceFailureException.class);
     }
 
