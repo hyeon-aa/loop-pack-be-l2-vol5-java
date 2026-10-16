@@ -1,6 +1,6 @@
 {
   "description": "문서에서 참조하는 기존 측정 원본을 묶었다. 각 결과는 해당 실행 시점의 기록이며 새 측정이 아니다.",
-  "source_count": 16,
+  "source_count": 17,
   "results": {
     "baseline.json": {
       "recorded_at": "2026-10-11T16:44:39.529003+09:00",
@@ -1565,6 +1565,357 @@
         "Handler_read_rnd_next": 0
       },
       "log_settings_restored": true
+    },
+    "index-prefix.json": {
+      "database": "8.0.46\tloopers_benchmark\tREPEATABLE-READ",
+      "indexes_before": "product\t0\tPRIMARY\t1\tid\tA\t9941\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t3\tprice\tA\t1101\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t4\tcreated_at\tD\t3101\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t5\tid\tD\t9941\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL",
+      "cases": {
+        "brand_products": {
+          "paths": {
+            "short": {
+              "sql": "SELECT p.* FROM product p FORCE INDEX (idx_product_brand_deleted) WHERE p.brand_id=7 AND p.deleted_at IS NULL",
+              "returned_rows": 99,
+              "handler_delta": {
+                "Handler_read_first": 0,
+                "Handler_read_key": 1,
+                "Handler_read_last": 0,
+                "Handler_read_next": 99,
+                "Handler_read_prev": 0,
+                "Handler_read_rnd": 0,
+                "Handler_read_rnd_next": 0
+              },
+              "explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted\tidx_product_brand_deleted\t17\tconst,const\t50\t100.00\tUsing index condition",
+              "explain_analyze": "-> Index lookup on p using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (p.deleted_at is null)  (cost=17.5 rows=50) (actual time=0.073..0.176 rows=99 loops=1)",
+              "all_ms": [
+                0.35625,
+                0.313,
+                0.3365,
+                0.25425,
+                0.4535,
+                0.28675,
+                0.43825,
+                0.619,
+                0.4275,
+                0.26699999999999996,
+                0.2535,
+                0.2925,
+                0.25625000000000003,
+                0.39149999999999996,
+                0.41550000000000004,
+                0.252,
+                0.42624999999999996,
+                0.34175,
+                0.33349999999999996,
+                0.2545,
+                0.41,
+                0.264,
+                0.305,
+                0.26325,
+                0.37024999999999997,
+                0.27525,
+                0.279,
+                0.23399999999999999,
+                0.232,
+                0.27225
+              ],
+              "timing": {
+                "median_ms": 0.29874999999999996,
+                "mean_ms": 0.32914166666666667,
+                "min_ms": 0.232,
+                "max_ms": 0.619
+              }
+            },
+            "long": {
+              "sql": "SELECT p.* FROM product p FORCE INDEX (idx_product_brand_price) WHERE p.brand_id=7 AND p.deleted_at IS NULL",
+              "returned_rows": 99,
+              "handler_delta": {
+                "Handler_read_first": 0,
+                "Handler_read_key": 1,
+                "Handler_read_last": 0,
+                "Handler_read_next": 99,
+                "Handler_read_prev": 0,
+                "Handler_read_rnd": 0,
+                "Handler_read_rnd_next": 0
+              },
+              "explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_price\tidx_product_brand_price\t17\tconst,const\t50\t100.00\tUsing index condition",
+              "explain_analyze": "-> Index lookup on p using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (p.deleted_at is null)  (cost=17.5 rows=50) (actual time=0.0436..0.16 rows=99 loops=1)",
+              "all_ms": [
+                0.2965,
+                0.28049999999999997,
+                0.29525,
+                0.30675,
+                0.3,
+                0.2565,
+                0.28350000000000003,
+                0.322,
+                0.3925,
+                0.37725,
+                0.429,
+                0.35750000000000004,
+                0.2745,
+                0.28075,
+                0.296,
+                0.41750000000000004,
+                0.365,
+                0.333,
+                0.321,
+                0.3595,
+                0.3035,
+                0.32375,
+                0.236,
+                0.29775,
+                0.33149999999999996,
+                0.31275,
+                1.1119999999999999,
+                0.34275,
+                0.304,
+                0.2545
+              ],
+              "timing": {
+                "median_ms": 0.30974999999999997,
+                "mean_ms": 0.3454333333333333,
+                "min_ms": 0.236,
+                "max_ms": 1.1119999999999999
+              }
+            }
+          },
+          "automatic_explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted,idx_product_brand_price\tidx_product_brand_deleted\t17\tconst,const\t99\t100.00\tUsing index condition"
+        },
+        "visible_count": {
+          "paths": {
+            "short": {
+              "sql": "SELECT COUNT(*) FROM product p FORCE INDEX (idx_product_brand_deleted) WHERE p.deleted_at IS NULL AND p.brand_id=7 AND EXISTS (SELECT 1 FROM brand b WHERE b.id=p.brand_id AND b.deleted_at IS NULL)",
+              "returned_rows": 1,
+              "handler_delta": {
+                "Handler_read_first": 0,
+                "Handler_read_key": 2,
+                "Handler_read_last": 0,
+                "Handler_read_next": 99,
+                "Handler_read_prev": 0,
+                "Handler_read_rnd": 0,
+                "Handler_read_rnd_next": 0
+              },
+              "explain": "1\tSIMPLE\tb\tNULL\tconst\tPRIMARY\tPRIMARY\t8\tconst\t1\t100.00\tNULL\n1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted\tidx_product_brand_deleted\t17\tconst,const\t99\t100.00\tUsing where; Using index",
+              "explain_analyze": "-> Aggregate: count(0)  (cost=20.1 rows=1) (actual time=0.0347..0.0348 rows=1 loops=1)\n    -> Filter: (p.deleted_at is null)  (cost=10.2 rows=99) (actual time=0.0145..0.0291 rows=99 loops=1)\n        -> Covering index lookup on p using idx_product_brand_deleted (brand_id=7, deleted_at=NULL)  (cost=10.2 rows=99) (actual time=0.0139..0.023 rows=99 loops=1)",
+              "all_ms": [
+                0.1175,
+                0.13275,
+                0.11574999999999999,
+                0.129,
+                0.11675,
+                0.19675,
+                0.10925,
+                0.1275,
+                0.11474999999999999,
+                0.12625,
+                0.13774999999999998,
+                0.12075,
+                0.17425000000000002,
+                0.125,
+                0.11524999999999999,
+                0.332,
+                0.25425,
+                0.13699999999999998,
+                0.13999999999999999,
+                0.1185,
+                0.11524999999999999,
+                0.118,
+                0.11325,
+                0.11425,
+                0.1125,
+                0.114,
+                0.1185,
+                0.11474999999999999,
+                0.1275,
+                0.1255
+              ],
+              "timing": {
+                "median_ms": 0.119625,
+                "mean_ms": 0.13715,
+                "min_ms": 0.10925,
+                "max_ms": 0.332
+              }
+            },
+            "long": {
+              "sql": "SELECT COUNT(*) FROM product p FORCE INDEX (idx_product_brand_price) WHERE p.deleted_at IS NULL AND p.brand_id=7 AND EXISTS (SELECT 1 FROM brand b WHERE b.id=p.brand_id AND b.deleted_at IS NULL)",
+              "returned_rows": 1,
+              "handler_delta": {
+                "Handler_read_first": 0,
+                "Handler_read_key": 2,
+                "Handler_read_last": 0,
+                "Handler_read_next": 99,
+                "Handler_read_prev": 0,
+                "Handler_read_rnd": 0,
+                "Handler_read_rnd_next": 0
+              },
+              "explain": "1\tSIMPLE\tb\tNULL\tconst\tPRIMARY\tPRIMARY\t8\tconst\t1\t100.00\tNULL\n1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_price\tidx_product_brand_price\t17\tconst,const\t99\t100.00\tUsing where; Using index",
+              "explain_analyze": "-> Aggregate: count(0)  (cost=21.3 rows=1) (actual time=0.0353..0.0353 rows=1 loops=1)\n    -> Filter: (p.deleted_at is null)  (cost=11.4 rows=99) (actual time=0.0154..0.0298 rows=99 loops=1)\n        -> Covering index lookup on p using idx_product_brand_price (brand_id=7, deleted_at=NULL)  (cost=11.4 rows=99) (actual time=0.0148..0.0238 rows=99 loops=1)",
+              "all_ms": [
+                0.12925,
+                0.23025,
+                0.12075,
+                0.14475,
+                0.12300000000000001,
+                0.1225,
+                0.11725000000000001,
+                0.11699999999999999,
+                0.14325000000000002,
+                0.12000000000000001,
+                0.11625,
+                0.13999999999999999,
+                0.12075,
+                0.13525,
+                0.11875,
+                0.1835,
+                0.12224999999999998,
+                0.18575,
+                0.126,
+                0.1155,
+                0.13325,
+                0.15025,
+                0.12875,
+                0.11299999999999999,
+                0.121,
+                0.112,
+                0.11900000000000001,
+                0.1205,
+                0.14275,
+                0.10475
+              ],
+              "timing": {
+                "median_ms": 0.12237499999999998,
+                "mean_ms": 0.132575,
+                "min_ms": 0.10475,
+                "max_ms": 0.23025
+              }
+            }
+          },
+          "automatic_explain": "1\tSIMPLE\tb\tNULL\tconst\tPRIMARY\tPRIMARY\t8\tconst\t1\t100.00\tNULL\n1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted,idx_product_brand_price\tidx_product_brand_deleted\t17\tconst,const\t99\t100.00\tUsing where; Using index"
+        },
+        "deletion_ids": {
+          "paths": {
+            "short": {
+              "sql": "SELECT p.id FROM product p FORCE INDEX (idx_product_brand_deleted) WHERE p.brand_id=7 AND p.deleted_at IS NULL ORDER BY p.id",
+              "returned_rows": 99,
+              "handler_delta": {
+                "Handler_read_first": 0,
+                "Handler_read_key": 1,
+                "Handler_read_last": 0,
+                "Handler_read_next": 99,
+                "Handler_read_prev": 0,
+                "Handler_read_rnd": 0,
+                "Handler_read_rnd_next": 0
+              },
+              "explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted\tidx_product_brand_deleted\t17\tconst,const\t50\t100.00\tUsing where; Using index",
+              "explain_analyze": "-> Filter: (p.deleted_at is null)  (cost=5.29 rows=50) (actual time=0.0749..0.0959 rows=99 loops=1)\n    -> Covering index lookup on p using idx_product_brand_deleted (brand_id=7, deleted_at=NULL)  (cost=5.29 rows=50) (actual time=0.0737..0.0889 rows=99 loops=1)",
+              "all_ms": [
+                0.116,
+                0.11625,
+                0.1115,
+                0.13899999999999998,
+                0.121,
+                0.10325000000000001,
+                0.116,
+                0.14075000000000001,
+                0.1065,
+                0.092,
+                0.11375,
+                0.4705,
+                0.1815,
+                0.10475,
+                0.1115,
+                0.14200000000000002,
+                0.12575,
+                0.118,
+                0.11225,
+                0.10325000000000001,
+                0.1215,
+                0.16275,
+                0.11349999999999999,
+                0.10500000000000001,
+                0.11675,
+                0.10900000000000001,
+                0.125,
+                0.107,
+                0.107,
+                0.124
+              ],
+              "timing": {
+                "median_ms": 0.116,
+                "mean_ms": 0.13123333333333334,
+                "min_ms": 0.092,
+                "max_ms": 0.4705
+              }
+            },
+            "long": {
+              "sql": "SELECT p.id FROM product p FORCE INDEX (idx_product_brand_price) WHERE p.brand_id=7 AND p.deleted_at IS NULL ORDER BY p.id",
+              "returned_rows": 99,
+              "handler_delta": {
+                "Handler_read_first": 0,
+                "Handler_read_key": 1,
+                "Handler_read_last": 0,
+                "Handler_read_next": 99,
+                "Handler_read_prev": 0,
+                "Handler_read_rnd": 0,
+                "Handler_read_rnd_next": 0
+              },
+              "explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_price\tidx_product_brand_price\t17\tconst,const\t99\t100.00\tUsing where; Using index; Using filesort",
+              "explain_analyze": "-> Sort: p.id  (cost=11.4 rows=99) (actual time=0.0596..0.0631 rows=99 loops=1)\n    -> Filter: (p.deleted_at is null)  (cost=11.4 rows=99) (actual time=0.0224..0.0377 rows=99 loops=1)\n        -> Index lookup on p using idx_product_brand_price (brand_id=7, deleted_at=NULL)  (cost=11.4 rows=99) (actual time=0.0216..0.0313 rows=99 loops=1)",
+              "all_ms": [
+                0.12324999999999998,
+                0.1295,
+                0.16875,
+                0.1525,
+                0.1445,
+                0.13349999999999998,
+                0.12449999999999999,
+                0.17425000000000002,
+                0.11775000000000001,
+                0.13999999999999999,
+                0.25825000000000004,
+                0.20450000000000002,
+                0.13799999999999998,
+                0.1365,
+                0.11649999999999999,
+                0.17149999999999999,
+                0.14075000000000001,
+                0.132,
+                0.13699999999999998,
+                0.13924999999999998,
+                0.1445,
+                0.12975,
+                0.14125,
+                0.12375,
+                0.174,
+                0.14975,
+                0.125,
+                0.12475,
+                0.14400000000000002,
+                0.163
+              ],
+              "timing": {
+                "median_ms": 0.139625,
+                "mean_ms": 0.14675,
+                "min_ms": 0.11649999999999999,
+                "max_ms": 0.25825000000000004
+              }
+            }
+          },
+          "automatic_explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted,idx_product_brand_price\tidx_product_brand_deleted\t17\tconst,const\t99\t100.00\tUsing where; Using index"
+        }
+      },
+      "notes": [
+        "Read-only SQL experiment; no schema/data/statistics changes.",
+        "FORCE INDEX isolates candidates; no-hint plans also recorded.",
+        "10 warmup + 30 samples each per shape, alternating execution order.",
+        "Server durations only; no API, write or concurrent deletion benchmark."
+      ],
+      "index_size_pages": {
+        "short": 18,
+        "long": 25
+      },
+      "indexes_after": "product\t0\tPRIMARY\t1\tid\tA\t9941\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t3\tprice\tA\t1101\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t4\tcreated_at\tD\t3101\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t5\tid\tD\t9941\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL",
+      "validated_profiled_executions": 240
     },
     "index-reset.json": {
       "before_indexes": "product\t0\tPRIMARY\t1\tid\tA\t10098\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t3\tprice\tA\t1101\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t4\tcreated_at\tD\t3101\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t5\tid\tD\t10000\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tPRIMARY\t1\tid\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t1\tuser_id\tA\t182\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t2\tproduct_id\tA\t58949\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t1\tidx_product_like_product\t1\tproduct_id\tA\t8849\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL",
@@ -4382,6 +4733,7 @@
     "fixed-page-brand-index.json": "f1054f5b99e7c2ae7261bcc1699739cdb575551531c1501a8318e682de4ec7b9",
     "fixed-page-price-index.json": "4e6fb88e9878d7a8f22761553891b62958436938c8a3ffc6c2ec14f7d1f37333",
     "handler-extension-probe.json": "007b1384d14b8d4fd43b594adce649b9a13cbf76a7ca377f3b5f33eeb5e71fda",
+    "index-prefix.json": "3a00133003396e7cdadd627b9f00783db165f3edf6070256cc53a8a741966a4a",
     "index-reset.json": "ff1d6cfaf451d8acf804a7d9145b1a4a192c7e260e800067f3ac008a75caed63",
     "price-only-optimizer-choice.json": "9a74d75c19c78fc85e893e8e99a689ff951795f16a00349ccdcba5f75864d00d",
     "price-page.json": "f3f79af80b25ad452c1a06e597f53a3002b7904a3974c6e93b4dfe11cd136fc6",
