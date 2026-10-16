@@ -276,6 +276,36 @@ CREATE TABLE LIKE + INSERT SELECT로 상품 테이블을 복제했다. 복제에
 
 실제 API·COUNT·좋아요·네트워크·쓰기·동시 변경은 이 비교에 포함하지 않았다. 날짜 문자열 형식은 datetime 값으로 정규화했다. 브랜드 100개의 프로젝트 seed와 활성 상품 99개인 브랜드 7을 기준으로 OFFSET 60을 비교했다. 후보·복제 생성과 복제 변경을 실제 상품 데이터 변경으로 기록하지 않는다. 실험 후 복제 제거·실제 데이터와 인덱스 보존을 확인했다. DDL과 조회 후보는 SQL에 명시하고 원본 결과를 보존했다. 모델·운영 코드 변경이 없어 이번에는 기능 회귀를 재실행하지 않았다.
 
+## 9. 좋아요 인덱스 재적용과 실제 API 전후 확인
+
+현재 상품 DB의 기존 브랜드·05 가격 인덱스를 확인한 뒤 같은 benchmark 앱 프로세스에서 좋아요 인덱스 없는 API를 먼저 측정했다. [적용 전 API · final-before-like-index-api.json](measurements/index-results.json). 이후 실제 product_like에 product_id 인덱스만 생성·ANALYZE하고 같은 앱에서 재측정했다. [적용 후 API · final-after-like-index-api.json](measurements/index-results.json). 매 단계 준비 10회·측정 30회, 동시 요청 1개로 모든 응답 필드를 독립 seed 기대값과 검증했다. 두 단계의 응답 체크섬·전체 응답도 같았다.
+
+| HTTP·실제 SQL        | 좋아요 인덱스 없음 | 적용 후 |
+| -------------------- | -----------------: | ------: |
+| HTTP 중앙값          |            25.32ms | 13.12ms |
+| 평균                 |            27.18ms | 16.94ms |
+| p95                  |            38.95ms | 40.99ms |
+| 업무 SELECT 수       |                  5 |       5 |
+| 상품 페이지 접근     |     20행·Sort 없음 |    동일 |
+| 좋아요 접근          |             62,756 |     248 |
+| 상품 응답·totalCount |            20개·99 |    동일 |
+
+고정 상품 20개의 좋아요 SQL 자체도 실제 테이블에서 추가 전후 준비 10회·측정 30회 및 별도 Handler 실행을 확인했다. 전체 82회 집계가 seed 기대값과 같았고 18그룹·총 248건이었다. [집계 원본 · final-like-index.json](measurements/index-results.json), [13 SQL](../../scripts/sql/week4-13-like-product-index.sql).
+
+집계 SQL 중앙값은 7.608ms → 0.259ms, Handler next 증가 62,756 → 248이었다. 기존 경로의 key 249·rnd_next 19에는 임시 테이블 집계·읽기 요청이 포함돼 키 조회 횟수를 상품 수로 해석하지 않는다. 새 경로는 key 증가 20과 range scan 248행·Group aggregate였다. 행 수·ID·사용자·상품 ID 합계로 실제 좋아요 데이터가 유지됐음을 확인했다.
+
+실제 API의 5개 SELECT를 general log에서 같은 앱 연결로 수집했다. 브랜드 단건 확인 1, 활성 상품 COUNT 1, 상품 페이지 1, 브랜드 묶음 조회 1, 좋아요 집계 1이었다. COUNT는 기존 브랜드 인덱스로 99개, 상품 페이지는 05로 20개·Sort 없음, 좋아요는 새 인덱스로 248개를 읽었다. 일반 로그 설정은 원래 값으로 복원했다. 측정 후 시작한 benchmark 앱은 종료했다.
+
+좋아요 인덱스의 등록·취소 비용은 이전 복제 실험에서 함께 측정했으며 읽기 이득만으로 비용이 없다고 판단하지 않는다. 원본 [like-index-read-write.json](measurements/index-results.json): 등록 중앙값 1.249 → 1.277ms·취소 1.241 → 1.345ms, 보조 인덱스 할당량 약 1.5MiB 증가. 반복값이 겹치는 로컬 단일 관계 실험이므로 고정된 쓰기 증가율로 해석하지 않는다.
+
+이번 최종 선택은 DB 가격순 offset 페이지·별도 묶음 좋아요 집계·05 상품 가격 인덱스·13 좋아요 인덱스다. 두 모델 선언과 실제 DB를 대조했다. 페이지 선행 JOIN은 SQL 실험 결과로 별도 집계를 유지했고 JOIN API 비교는 미실시다. HTTP 중앙값 개선을 관찰했지만 p95 개선을 확인하지 못했으며 실제 부하·동시 요청·다른 브랜드 분포는 검증 범위 밖이다. 회귀 검사는 다음 결과에 기록한다.
+
+### 최종 회귀·문서 대조
+
+Java 21·Docker Testcontainers 연결에서 `:apps:commerce-api:check -Pversion=week4-final-read`를 실행해 BUILD SUCCESSFUL로 종료했다. XML 결과 49개 suite·260개 테스트, 실패·오류·skip 0을 확인했다. 상품·브랜드·좋아요·주문·포인트 및 ArchUnit을 포함한다. Checkstyle main/test는 현재 입력 기준 UP-TO-DATE로 성공했다. 테스트 기대값·lint·아키텍처 규칙은 변경하지 않았다.
+
+코드의 가격순 조회·COUNT·묶음 집계와 두 모델의 인덱스 선언을 실제 API SQL·benchmark 인덱스와 대조했다. 기존 API 계약과 주문·재고 판단을 유지하며 캐시를 추가하지 않았다. 최종 선택·측정 조건·한계·후속 검토를 design·plan·setup에 갱신했다. 커밋·push는 하지 않았다. 사용자는 11·12와 새 13 SQL을 직접 확인한 뒤 추가 질문을 이어갈 수 있다.
+
 ## 17. 브랜드 중복 조회 제거
 
 `ProductQueryService.getList()`가 `brandService.get(brandId)`로 브랜드를 확인한 뒤, `enrich()` 안에서 `brandService.getAllActiveByIds(...)`로 같은 브랜드를 다시 조회하고 있었다. 9절에서 이미 업무 SELECT 5개를 나열했지만("브랜드 확인·COUNT·상품 페이지·브랜드 정보·좋아요 집계") 그중 "브랜드 확인"과 "브랜드 정보"가 중복이라는 점은 그때 짚지 않았다.
