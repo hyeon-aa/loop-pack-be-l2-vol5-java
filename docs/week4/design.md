@@ -1,3 +1,30 @@
+# 4주차 설계 — 상품 페이지 조회와 캐시
+
+브랜드 7의 미삭제 상품을 가격순으로 20개 고른 뒤, 그 상품들의 좋아요 수를 붙인다. 인덱스 실험과 API·캐시 비교는 이 상품 페이지를 기준으로 한다. 응답은 `items`, `page`, `size`이며 총상품수를 세거나 반환하지 않는다([ADR 0022](../adr/0022-product-list-without-total-count.md)).
+
+| 책임 | 현재 구현 |
+| --- | --- |
+| 상품 페이지 | DB 필터·가격순 정렬·LIMIT/OFFSET |
+| 좋아요 수 | 선택한 상품 ID로 product_like_count를 한 번에 조회 |
+| 브랜드 정보 | 조회 초기에 검증한 브랜드를 응답에 재사용 |
+| 캐시 | 브랜드 필터·첫 20개의 가격순 상품 페이지와 인기순 ID 목록 |
+| 캐시 외부 값 | 좋아요·브랜드 정보·재고·개인별 정보 |
+| 검증 자료 | [실제 API 비교](price-cache-comparison.md), [쏠림·동시 조회](price-cache-skew.md), [실행 기록](implementation-log.md#price-cache-without-count) |
+
+인덱스 실험의 질문과 관찰을 따라 읽은 뒤, 좋아요 수의 저장 방식·현재 조회 흐름·캐시 정책과 최종 판단으로 이어진다. 상품 인덱스 실험의 1~8절은 읽는 범위·정렬·커버링 원리를 확인한 SQL 실험이다. 실험용 COUNT나 도구의 자동 COUNT는 상품 목록 API의 실행 SQL이 아니다.
+
+| 읽는 순서 | 찾을 내용 |
+| --- | --- |
+| [조회 계약과 측정 환경](#query-contract) | 대상 요청·응답과 측정 범위 |
+| [실험을 읽는 방법](#measurement-method) | 실행 계획·Handler 해석과 도구의 자동 조회 |
+| [상품 인덱스 실험](#product-index-experiments) | 조건·정렬·컬럼 순서·커버링·페이지 비교와 선택 근거 |
+| [좋아요 카운터 비정규화](#like-count-design) | 좋아요 수를 저장하고 갱신하는 방식 |
+| [현재 조회 흐름과 인덱스](#current-query-flow) | 응답을 만드는 책임과 현재 인덱스별 용도 |
+| [가격순 첫 페이지 캐시](#price-page-cache) | 저장 범위·변경 후 삭제·실패와 최신성 |
+| [캐시 없음·로컬·Redis 비교](#cache-provider-comparison) | 저장소별 설정과 비교 범위 |
+| [가격순 캐시 결론](#price-cache-choice) | 실제 API 결과·저장소 선택·측정한 비용과 한계 |
+| [인기순 캐시: 순위 재사용](#popular-cache-choice) | 60초 순위·현재 숫자와 하트·무효화와 검증 |
+
 <a id="query-contract"></a>
 
 ## 조회 계약과 측정 환경
@@ -231,6 +258,21 @@ idx_product_brand_price의 앞 두 컬럼은 idx_product_brand_deleted와 같은
 
 위 조건·페이지 비교의 공통 판단은 인덱스 존재·Sort 유무만으로 비용을 판단하지 않고 조건·분포·읽는 범위를 함께 보는 것이다. 실험용 테이블·인덱스는 정리했고 05와 기존 브랜드 인덱스를 유지한다.
 
+### 인덱스 후보 비교와 선택 근거 요약
+
+아래는 상품 10,000건의 같은 가격순 20개 쿼리에서 확인한 각 실험의 결과를 모은 것이다. 시간 표본을 합친 비교가 아니라 접근 행 수와 추가 정렬 여부를 요약한다. 모든 후보는 같은 결과를 반환했다.
+
+| 비교한 인덱스 | 실제 접근 행 수 | 추가 정렬 | 확인한 차이 |
+| --- | ---: | --- | --- |
+| 기존 `(brand_id, deleted_at)` | 99 | 있음 | 브랜드·미삭제 범위는 좁히지만 가격순은 별도로 만든다. |
+| `(brand_id, deleted_at, price)` | 99 | 있음 | 가격 뒤의 생성 시각·ID 동점 순서가 남는다. |
+| 현재 `(brand_id, deleted_at, price ASC, created_at DESC, id DESC)` | 20 | 없음 | 조건 구간과 전체 정렬 순서가 맞아 20개를 채우고 멈춘다. |
+| 가격 우선 `(price ASC, brand_id, deleted_at, created_at DESC, id DESC)` | 1,600 | 없음 | 가격순으로 읽지만 다른 브랜드를 지나가며 조건에 맞는 상품을 찾는다. |
+
+가격 우선 후보는 비교를 위해 강제한 경로이며, 힌트 없는 쿼리는 현재 브랜드 우선 인덱스를 선택했다. 이 결과가 **브랜드 조건으로 먼저 좁힌 뒤 필요한 순서대로 읽는 선택**의 실측 근거다. 추가 정렬이 없다는 사실만으로 효율을 판단하지 않고 읽는 범위도 함께 비교했다. 분포를 바꾼 실험은 이 판단이 유지되는 범위를 확인하는 용도이며, 분포가 달라질 때마다 인덱스를 새로 설계했다는 뜻은 아니다.
+
+원본은 [인덱스 측정 묶음](measurements/index-results.json)의 `fixed-page-brand-index.json`, `fixed-page-price-index.json`, `price-tie-index.json`, `price-first-index.json`에 있다. 세부 조건은 상품 인덱스 실험의 2·3·7절을 따른다. 실제 호출 빈도와 전체 읽기·쓰기 부하에 따른 인덱스 유지 비용은 아직 측정하지 않았으므로 모든 조회에서의 최적 구성으로 결론 내리지 않는다.
+
 <a id="like-count-design"></a>
 
 ## 좋아요 카운터 비정규화
@@ -240,6 +282,39 @@ idx_product_brand_price의 앞 두 컬럼은 idx_product_brand_deleted와 같은
 좋아요 원본 관계와 별도로 `product_like_count`에 상품별 개수를 저장한다. 상품 엔티티에 like_count를 넣지 않는다. 좋아요 관계 INSERT/DELETE가 실제 반영됐을 때만 같은 트랜잭션에서 카운터를 원자적으로 증감한다. 중복 등록·없는 취소·rollback·동시 변경·생성 시 초기화·backfill을 검증한다([ADR 0020](../adr/0020-like-count-denormalized-counter.md)).
 
 같은 상품의 좋아요 쓰기는 카운터 한 행에서 경합할 수 있다. 상품 행의 재고·가격 쓰기와 분리했다는 사실을 쓰기 비용이 없다는 뜻으로 해석하지 않는다. 좋아요순 전체 정렬을 임의의 20개 안에서 정렬하는 방식으로 바꾸지 않는다.
+
+<a id="current-query-flow"></a>
+
+## 현재 조회 흐름과 인덱스
+
+```text
+ProductListQueryService
+  → ProductQueryService: 브랜드 확인·가격순 페이지 선택·좋아요 카운터 합성
+      → PricePageReader: 캐시 또는 DB에서 가격순 페이지 선택
+  → X-USER-ID가 있으면 활성 사용자 확인
+  → 선택된 페이지의 상품 ID로 product_like 일괄 조회
+  → 항목별 isLiked를 합쳐 items·page·size 응답
+```
+
+개인별 `isLiked`는 공통 캐시에 넣지 않는다. 선택 헤더 `X-USER-ID`가 있으면 활성 사용자를 확인하고, 선택된 페이지의 상품 ID만 `product_like`에서 한 번에 찾는다. 상품마다 반복 조회하지 않는다. 헤더가 없으면 사용자·개인 관계 조회를 생략하고 `isLiked=false`다. 없는/삭제된 사용자 헤더는 404, 숫자가 아닌 헤더는 400이다. 상세·내 좋아요 목록 응답은 이번 범위에 포함하지 않는다([ADR 0023](../adr/0023-product-list-personal-like-state.md)).
+
+비어 있지 않은 브랜드 필터 가격순 요청에서 익명 조회의 업무 SELECT는 브랜드·상품 페이지·좋아요 카운터의 3개이며, hit는 상품 페이지를 활성 ID 확인으로 대체한다. 로그인 조회에는 사용자 확인과 개인 관계 조회가 추가된다. 쿼리 수만으로 성능을 판단하지 않고 현재 실행 SQL·계획과 API 시간을 함께 본다. 좋아요 등록/취소 commit 완료 뒤 시작한 새 요청에 하트와 현재 카운터를 합성한다. 이미 진행 중인 조회의 snapshot까지 최신이라고 보장하지 않는다.
+
+상품 인덱스는 `(brand_id, deleted_at, price ASC, created_at DESC, id DESC)`다. 상품 이름이 인덱스에 없어 실제 행 접근이 남는다. 같은 브랜드의 첫 페이지는 정렬 인덱스로 20개를 채우면 멈춘다. 브랜드 없는 조회나 다른 정렬의 성능까지 이 결과로 보장하지 않는다. 실제로 10만 건에서 브랜드 없는 기본 목록(latest)은 중앙값 약 573ms로, 브랜드 7 가격순(약 10ms)과 크게 달랐다. 과제 측정 범위 밖이라 개선하지 않고 한계로 둔다([구현 기록 31절](implementation-log.md#final-review-fixes)).
+
+### 현재 인덱스별 용도와 남은 판단
+
+| 인덱스 | 대응하는 쿼리·제약 | 현재 근거와 한계 |
+| --- | --- | --- |
+| `product(brand_id, deleted_at, price ASC, created_at DESC, id DESC)` | 브랜드·미삭제 조건의 가격순 페이지 | 3절의 읽기·정렬 비교와 현재 실제 API 계획으로 확인했다. 브랜드 없는 조회·다른 정렬·실제 호출 빈도까지 대표하지 않는다. |
+| `product(brand_id, deleted_at)` | 브랜드별 상품 조회, 브랜드 삭제 대상의 `SELECT id ... ORDER BY id` | 6절에서 ID 조회는 추가 정렬이 없고 긴 가격순 인덱스에는 Sort가 생겼다. 작은 로컬 표본만으로 필수 유지라고 확정하지 않으며 큰 브랜드의 정렬 비용과 쓰기 유지 비용을 더 비교할 수 있다. |
+| `product_like`의 `UNIQUE(user_id, product_id)` | 중복 좋아요 방지, 사용자·상품 관계 조회/취소, `user_id = ? AND product_id IN (...)`의 개인별 좋아요 여부 | 현재 개인 관계 조회는 기존 유니크 인덱스를 사용한다([ADR 0023](../adr/0023-product-list-personal-like-state.md)). 사용자의 전체 좋아요 목록에서 생성 시각 정렬까지 해결한다는 뜻은 아니다. |
+| `product_like_count`의 `PRIMARY(product_id)` | 페이지 상품 ID의 카운터 일괄 조회, 해당 상품 카운터 증감 | 현재 좋아요 수는 이 테이블에서 읽는다. 상품별 카운터 PK 조회와 원자적 쓰기는 [ADR 0020](../adr/0020-like-count-denormalized-counter.md)을 따른다. |
+| `product_like(product_id)` | 과거 `WHERE product_id IN (...) GROUP BY product_id` 집계 | 과거 집계 범위 스캔에는 근거가 있었지만 현재 목록의 좋아요 수 조회는 카운터로 바뀌었다. 과거 개선만으로 현재 유지 필요성을 확정하지 않으며, 다른 사용 쿼리와 유지 비용을 대조할 재검토 대상이다. 이번 문서 보강에서 삭제하지 않았다. |
+
+현재 상품 목록 API에는 총상품수 COUNT가 없다. 6절 등의 COUNT 비교는 과거 실험이며 현재 목록 SQL이나 인덱스 유지의 근거로 그대로 사용하지 않는다. 현재 코드의 [상품 조회](../../apps/commerce-api/src/main/java/com/loopers/infrastructure/product/ProductJpaRepository.java)·[좋아요 조회와 쓰기](../../apps/commerce-api/src/main/java/com/loopers/infrastructure/like/LikeRepositoryImpl.java), 모델의 [상품 인덱스](../../apps/commerce-api/src/main/java/com/loopers/domain/product/ProductModel.java)·[좋아요 인덱스](../../apps/commerce-api/src/main/java/com/loopers/domain/like/LikeModel.java)와 대조했다.
+
+JOIN은 비교 후보이며 현재 운영 조회는 상품 페이지와 좋아요 조회를 분리한다. JOIN 실험의 과거 API 지연을 현재 캐시 비교에 합산하지 않는다.
 
 <a id="price-page-cache"></a>
 

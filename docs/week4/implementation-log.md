@@ -1,5 +1,17 @@
 # 4주차 구현 기록
 
+## 현재 상태
+
+브랜드 7 가격순 인덱스·좋아요 카운터·브랜드 중복 조회 제거에 이어 기본 가격순 캐시를 구현했다. 가격순 구현·실행 검증은 21~27절의 상품 페이지 조회와 cache-aside + commit 후 DEL이다. 1~20절은 각 실험 시점의 기록이며 현재 API/캐시 수치와 합산하지 않는다. 정상 변경과 실패/늦은 저장의 정책을 구분한다.
+
+측정 근거는 [보관 목록](measurements/README.md)의 JSON 9개를 커밋 대상으로 둔다. 현재 인기순은 [30절](#popular-cache-snapshot)의 60초 ID 순위다. [28절](#likes-cache-basic)은 좋아요마다 DEL하던 이전 비교와 326건 검사 기록이다. 문서에서 사용하는 인덱스·카운터 개별 원본 33개는 두 묶음의 `results["원래 파일명"]`에 값 그대로 보관했고 가격순 캐시 4개는 유지했다. 여기에 이전 좋아요순 비교·검사 2개와 현재 인기순 비교·검사를 함께 담은 1개를 추가했다. 원본 56개 파일의 바이트와 묶음의 각 JSON 값이 일치하는지 확인했다. 개별 중간 결과·실행 로그는 로컬에 남기고 Git에서 제외한다. 파일 정리는 새 성능 측정이나 숫자 변경이 아니다.
+
+## Handler 결과를 먼저 보기
+
+현재 SQL 01~14의 실제 Handler 차분과 원본 링크는 [Handler 검증 결과서](handler-results.md)에 모았다. 시간표와 분리해 **읽는 범위·정렬·카운터 변화**를 먼저 비교한다. 같은 상품 페이지 쿼리에서 관찰한 next 99 → 19가 읽기 감소의 핵심 근거다.
+
+기존 원본 34개 경로의 차분을 대조했고, 빠져 있던 IN 강제 경로·JOIN 관련 5개 블록은 이번에 블록별 3회 실측해 보완했다. 없는 값을 실행 계획에서 추산해 채우지 않았다. 커버링·추가 정렬은 Handler에 직접 나타나지 않을 수 있으므로 실행 계획과 함께 해석한다. JOIN 운영 적용은 후속 검토로 남긴다.
+
 ## 준비와 DB 초기화
 
 - 별도 측정용 MySQL: 3307/loopers_benchmark, MySQL 8.0.46·REPEATABLE READ. seed는 상품 10,000개·브랜드 100개·사용자 200명·좋아요 62,756건이다.
@@ -441,6 +453,1236 @@ HTTP는 연결·전체 본문 읽기를 포함한 urllib 시간이다. 별도 JV
 
 bootJar 성공, Checkstyle main/test 성공(UP-TO-DATE), LayeredArchitectureTest 1건 성공(실패·오류·skip 0). 이번에는 운영 Java 코드를 수정하지 않아 전체 기능 회귀를 재실행하지 않았다. seed 기반 SQL·HTTP 검증과 관련 아키텍처 검사를 수행했다. ADR 0002의 관계 집계와 ADR 0016의 삭제 대상 ID·PK 잠금 순서를 대조했고 정책 변경은 없다. design의 비정규화·잦은 무효화에 관한 추정을 미확정 후보로 정정했다. 커밋·push는 하지 않았다.
 
+<a id="sql-reading-guide"></a>
+
+## 14. 직접 실행용 SQL 정리
+
+각 SQL은 대상 DB·기록 링크와 쿼리별 확인 목적 한 줄을 둔다. 긴 해설·실행 계획 출력·대화 메모는 아래 접힌 원본에 보존했다. 수치의 검증 근거는 앞 절의 측정 JSON이며, 사용자가 붙여 둔 출력은 별도 미검증 메모다. 특히 정리 전 18번의 인덱스 허용 쿼리 아래 출력은 직전 제외 쿼리와 같아 복사 중복 가능성이 있으므로 새로운 실측으로 간주하지 않는다.
+01~03은 기존 브랜드 인덱스만 있을 때의 기준선이다. 현재 최종 인덱스 상태에서 추가 전후를 간단히 보려면 18번을 사용한다. 04·05·06·07·09·11은 준비/정리 DDL이 있으므로 블록별로 실행하고 기존 후보가 있으면 CREATE를 생략한다. 06의 주석 속 준비·정리 SQL은 선택 실행할 수 있는 블록으로 꺼냈다. 05의 마지막 DROP은 재실험 초기화용이며 평소에는 실행하지 않는다. 12번 커서 값은 1만 건 seed의 60번째 상품 값이다.
+Handler는 같은 연결에서 SHOW → 일반 SELECT → SHOW 전체를 실행해 차분을 구한다. 확장의 자동 COUNT가 섞이면 SELECT 자체의 측정이 아니므로 05/07 handler-only 파일을 터미널 mysql에서 실행한다. EXPLAIN ANALYZE는 실제 조회를 실행하므로 Handler 측정 사이에 넣지 않는다. 17번은 다른 페이지 비교이며, 같은 페이지의 쏠림 전후는 18번이다.
+
+<details>
+<summary>week4-01-brand-filter.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 첫 변경 재검토: 이 단계에서는 ORDER BY·LIMIT을 SQL에 넣지 않는다.
+-- 추가했던 두 인덱스를 삭제한 측정용 DB의 원래 인덱스 상태에서 실행한다.
+-- 실행 계획부터 확인한다.
+-- 브랜드 7의 삭제되지 않은 상품을 조회한다.
+EXPLAIN SELECT p.*
+FROM product p
+WHERE p.deleted_at IS NULL;
+
+EXPLAIN SELECT p.*
+FROM product p
+WHERE p.deleted_at IS NULL AND p.brand_id = 7;
+
+-- 실제 실행 계획은 별도로 실행한다. 이것도 쿼리를 실행하므로 Handler가 증가한다.
+EXPLAIN ANALYZE SELECT p.*
+FROM product p
+WHERE p.deleted_at IS NULL;
+
+EXPLAIN ANALYZE SELECT p.*
+FROM product p
+WHERE p.deleted_at IS NULL AND p.brand_id = 7;
+
+-- Handler: 반드시 같은 연결에서 일반 SELECT 하나의 직전·직후를 비교한다.
+-- 아래 두 블록은 각각 실행한다. 전후 사이에 다른 쿼리를 실행하지 않는다.
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT p.* FROM product p
+WHERE p.deleted_at IS NULL;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT p.* FROM product p
+WHERE p.deleted_at IS NULL AND p.brand_id = 7;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+
+
+
+지금 난 브랜드 7의 상품을 가격순으로 조회한다. 인거고, 브랜드 7만 조건을 걸도록 db를 수정해씅니까 난 지금 이 코드부터 이제 조회속도를 높인다고 보면되겟지?
+기존에 db로 옮긴건 사실 시작은 아니고, 이제 옮겻으니까 이제부터 시작! 이게 정리가 안되니까 다음에 뭐여야되는지 자꾸 헷갈려. 그럼 내가 하나씩 얘기해볼게. 너가 의견주고 해줘. 이제 너가 말한다고 브랜드 7의 상품이 조회되었으니까 가격 순으로 order by를 추가해야돼.
+
+지금부터의 출발점을 “DB에서 브랜드 7의 미삭제 상품을 조회하는 코드”로 잡자. 그전에 브랜드 조건을 DB로 옮긴 과정은 준비 단계로 두면 덜 헷갈려.
+최종 목표는 브랜드 7의 상품을 가격순으로 20개 조회하는 것이고, 지금 다시 따라가는 첫 SQL에는 가격 정렬이 아직 없어.
+네가 말한 다음 단계가 맞아. 기존 조건에 이것만 추가하면 돼.
+ORDER BY price ASC, created_at DESC, id DESC
+이번 단계에서는 99개를 모두 반환하되 DB가 가격순으로 정렬하게 하는 것만 확인하자. 가격이 같을 때 순서가 일정하도록 생성 시각·ID도 넣는 거야.
+```
+
+</details>
+
+<details>
+<summary>week4-02-price-sort.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 출발점: 브랜드 7의 미삭제 상품 조회. 이번 변경은 ORDER BY만 추가한다.
+-- LIMIT·새 인덱스·좋아요 조회는 다음 단계에서 검토한다.
+SELECT p.*
+FROM product p
+WHERE p.deleted_at IS NULL
+  AND p.brand_id = 7
+ORDER BY p.price ASC, p.created_at DESC, p.id DESC;
+
+EXPLAIN
+SELECT p.*
+FROM product p
+WHERE p.deleted_at IS NULL
+  AND p.brand_id = 7
+ORDER BY p.price ASC, p.created_at DESC, p.id DESC;
+
+EXPLAIN ANALYZE
+SELECT p.*
+FROM product p
+WHERE p.deleted_at IS NULL
+  AND p.brand_id = 7
+ORDER BY p.price ASC, p.created_at DESC, p.id DESC;
+
+-- 아래 블록은 같은 연결에서 순서대로 실행하고 카운터의 전후 차이를 계산한다.
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT p.*
+FROM product p
+WHERE p.deleted_at IS NULL
+  AND p.brand_id = 7
+ORDER BY p.price ASC, p.created_at DESC, p.id DESC;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+```
+
+</details>
+
+<details>
+<summary>week4-03-fixed-product-page.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 이후 인덱스 비교에서 고정할 쿼리. 기존 브랜드·삭제 인덱스는 유지한다.
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+EXPLAIN
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+/* 직접 확인한 실행 계획 (실행할 SQL이 아니므로 주석으로 보존)
+-> Limit: 20 row(s)  (cost=34.6 rows=20) (actual time=1.63..1.63 rows=20 loops=1)
+    -> Sort: product.price, product.created_at DESC, product.id DESC, limit input to 20 row(s) per chunk  (cost=34.6 rows=99) (actual time=1.63..1.63 rows=20 loops=1)
+        -> Index lookup on product using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.464..1.49 rows=99 loops=1)
+*/
+
+
+-- Handler_read_*: MySQL 서버가 스토리지 엔진에 요청한 읽기 작업의 누적 카운터.
+-- 아래 일반 SELECT 하나의 직후 값 - 직전 값을 계산한다.
+-- 같은 연결에서 실행하고, 두 SHOW 사이에 다른 쿼리·EXPLAIN ANALYZE를 실행하지 않는다.
+-- Handler_read_key      : 인덱스 키로 찾는 읽기 요청.
+-- Handler_read_next     : 인덱스 순서에서 다음 항목을 읽는 요청.
+-- Handler_read_prev     : 인덱스 순서에서 이전 항목을 읽는 요청.
+-- Handler_read_first    : 인덱스의 첫 항목을 읽는 요청.
+-- Handler_read_last     : 인덱스의 마지막 항목을 읽는 요청.
+-- Handler_read_rnd      : 지정한 위치로 행을 읽는 요청.
+-- Handler_read_rnd_next : 테이블 스캔 등에서 다음 행을 읽는 요청.
+-- 디스크 읽기·Root/Branch/Leaf 페이지 방문 횟수·정렬 비교 횟수는 아니다.
+-- 보조 인덱스에서 기본키로 실제 행을 가져오는 InnoDB 내부 작업도 별도 횟수로 드러나지 않는다.
+-- 확장이 실행마다 다른 연결을 쓰면 이 전후 비교는 유효하지 않다.
+--
+-- 이번 측정: read_key 증가 1, read_next 증가 99, 나머지 증가 0.
+-- 직전 단계(ORDER BY만 있고 LIMIT 없음)도 key 1·next 99였다. 같아도 정상이다.
+-- 기존 인덱스는 가격순이 아니므로 가장 저렴한 20개를 고르려면 후보 99개를 읽어야 한다.
+-- LIMIT은 반환 상품을 99개 → 20개로 줄였지만 읽는 후보는 아직 줄이지 못했다.
+-- 정렬 유무·반환 수는 ANALYZE의 Sort·Limit 노드에서 확인한다.
+--
+-- 앞으로의 비교: 위의 고정 쿼리를 그대로 두고 가격 정렬용 인덱스를 추가했을 때
+-- ANALYZE의 실제 읽는 행·Sort 유무와 Handler 증가량이 함께 줄어드는지 확인한다.
+-- key 요청 수가 같아도 next 요청 수가 줄 수 있다. 정확한 값은 실제 실행으로 기록한다.
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+-- 기존 인덱스의 같은 브랜드·삭제 상태 구간은 ID 순서다. 가격 순서를 비교한다.
+-- 이 보조 확인 쿼리만 힌트를 사용한다. 실제 측정 쿼리는 힌트를 사용하지 않는다.
+SELECT brand_id, deleted_at, id, price
+FROM product FORCE INDEX (idx_product_brand_deleted)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY id
+LIMIT 10;
+```
+
+</details>
+
+<details>
+<summary>week4-04-price-tie-index.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 순서: 03 기존 브랜드 인덱스 → 04 가격까지만 → 05 동점 정렬까지 포함.
+-- price까지 인덱스에 추가하는 경우 04번을 해보고 왜 05번처럼 인덱스 만들어야하는지 확인하려한다.
+CREATE INDEX idx_product_brand_price_only ON product (brand_id, deleted_at, price);
+ANALYZE TABLE product;
+
+--force index없이 실행하니까 새로 추가한 idx_product_brand_price_only가 아니라 idx_product_brand_deleted 이 인덱스를 탄다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+--실행계획
+-> Limit: 20 row(s)  (cost=34.6 rows=20) (actual time=0.957..0.961 rows=20 loops=1)
+    -> Sort: product.price, product.created_at DESC, product.id DESC, limit input to 20 row(s) per chunk  (cost=34.6 rows=99) (actual time=0.954..0.956 rows=20 loops=1)
+        -> Index lookup on product using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.406..0.846 rows=99 loops=1)
+
+
+SHOW INDEX FROM product;
+
+--fore index로 idx_product_brand_price_only 타게 만든다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product FORCE INDEX (idx_product_brand_price_only)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+--실행계획
+-> Limit: 20 row(s)  (cost=34.6 rows=20) (actual time=0.232..0.236 rows=20 loops=1)
+    -> Sort: product.price, product.created_at DESC, product.id DESC, limit input to 20 row(s) per chunk  (cost=34.6 rows=99) (actual time=0.231..0.233 rows=20 loops=1)
+        -> Index lookup on product using idx_product_brand_price_only (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.0468..0.193 rows=99 loops=1)
+
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product FORCE INDEX (idx_product_brand_price)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+-- Handler는 각 후보의 일반 SELECT 직전·직후를 같은 연결에서 비교한다.
+-- 가격까지만: key 1·next 99, Index lookup 99행·Sort 있음.
+-- 전체 정렬: key 1·next 19, Index lookup 20행·Sort 없음.
+-- 모두 같은 20개 반환. WHERE·ORDER BY·SELECT 컬럼·LIMIT은 동일하다.
+-- (brand_id, deleted_at, price)는 같은 가격 안에서 생성 시각 DESC·ID DESC까지 맞추지 못한다.
+-- 기본키 id가 자동 포함되어도 요구한 동점 순서를 모두 해결한다는 뜻은 아니다.
+--
+-- 옵티마이저는 두 후보를 모두 실행해 시간을 재는 것이 아니라,
+-- 통계·인덱스 구조·조건·필요 컬럼·정렬 등을 바탕으로 실행 전 비용을 추정한다.
+-- 현재 데이터의 optimizer trace에서 두 ref 후보는 예상 rows=99·cost=34.65로 같았다.
+-- 힌트 없는 SQL은 기존 idx_product_brand_deleted를 선택했다.
+-- 기존 인덱스라서 항상 우선한다는 규칙이나 동률의 정확한 내부 선택 기준은 확인하지 않았다.
+-- cost는 밀리초가 아니다. 예상이 실제와 다를 수 있어 ANALYZE·Handler·시간을 함께 확인한다.
+-- 이번 쿼리에서 이득이 작다는 뜻이지 가격 범위 등 다른 쿼리에서도 불필요하다는 뜻은 아니다.
+
+-- 재실험 후 이번에 생성한 짧은 후보만 정리한다.
+-- DROP INDEX idx_product_brand_price_only ON product;
+
+-- 99개 후보를 끝까지 읽을 때: 첫 항목은 read_key, 이후 98개 + 끝 확인은 read_next 99로 관찰됐다.
+-- 05는 LIMIT을 채우고 멈추므로 다음 19개만 읽고 끝 확인은 필요하지 않았다.
+-- 아래 값들은 이번 측정의 관찰값이며 모든 계획에 고정된 공식은 아니다.
+```
+
+</details>
+
+<details>
+<summary>week4-05-handler-only.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 터미널의 MySQL 클라이언트로 이 파일 전체를 실행한다.
+-- 한 연결에서 실행하며 확장의 자동 COUNT가 들어오지 않는다.
+SELECT CONNECTION_ID() AS measurement_connection;
+
+SELECT 'BEFORE: 실행 전 누적값' AS measurement;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+SELECT 'AFTER: 실행 후 누적값' AS measurement;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+-- AFTER - BEFORE로 계산한다. 현재 전체 정렬 인덱스에서는 key +1, next +19를 관찰했다.
+-- 실제 값은 현재 인덱스·실행 계획과 함께 해석한다. ANALYZE는 이 구간에 넣지 않는다.
+```
+
+</details>
+
+<details>
+<summary>week4-05-price-index.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 순서: 04 가격까지만 있는 후보를 확인한 뒤 05 전체 정렬 인덱스로 비교한다.
+-- 05 재실험 순서: 먼저 SHOW INDEX FROM product로 인덱스 존재 여부를 확인한다.
+-- idx_product_brand_price가 없을 때만 아래 CREATE INDEX를 실행한다.
+-- 04의 짧은 후보와 하나씩 비교하려면 먼저 짧은 후보만 삭제한다.
+-- DROP INDEX idx_product_brand_price_only ON product;
+-- 기존 idx_product_brand_deleted는 유지한다.
+-- 파일 전체 실행 대신 DDL·조회·Handler 블록을 나눠 선택 실행한다.
+-- 맨 아래 DROP은 04로 다시 넘어갈 때만 실행한다.
+CREATE INDEX idx_product_brand_price
+ON product (brand_id, deleted_at, price ASC, created_at DESC, id DESC);
+ANALYZE TABLE product;
+
+-- 쿼리는 직전 단계와 같다. 실제 측정에는 인덱스 힌트를 넣지 않는다.
+EXPLAIN
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+/* 직접 실행한 계획 기록
+-> Limit: 20 row(s)  (cost=34.6 rows=20) (actual time=0.425..0.564 rows=20 loops=1)
+    -> Index lookup on product using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.421..0.559 rows=20 loops=1)
+*/
+
+
+DROP INDEX idx_product_brand_price_only ON product;
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+/* 직접 실행한 계획 기록
+-> Limit: 20 row(s)  (cost=34.6 rows=20) (actual time=0.831..0.906 rows=20 loops=1)
+    -> Index lookup on product using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.696..0.77 rows=20 loops=1)
+*/
+
+
+-- Handler 측정 방법
+-- VS Code MySQL 확장은 이 일반 SELECT 뒤에 Total 표시용 COUNT를 자동 실행했다.
+-- 실제 로그: LIMIT 20 SELECT + LIMIT 없는 COUNT가 같은 연결에서 실행됨.
+-- 상품 조회 key +1 / next +19, 자동 COUNT key +1 / next +99 => 합계 key +2 / next +118.
+-- 따라서 확장에서 보이는 전후 차이를 상품 SELECT 하나의 읽기량으로 해석하지 않는다.
+-- EXPLAIN ANALYZE는 확장에서 실행해 계획·actual rows·Sort 유무를 확인해도 된다.
+-- Handler만 측정하려면 다음 명령을 저장소 루트의 터미널에서 실행한다.
+-- 이 명령은 별도 파일을 한 MySQL 연결에서 실행하며 자동 COUNT를 보내지 않는다.
+--
+-- docker compose -f docker/infra-compose.yml --profile benchmark exec -T mysql-benchmark sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --table -u root -D loopers_benchmark' < scripts/sql/week4-05-handler-only.sql
+--
+-- 출력의 BEFORE·AFTER에서 같은 항목을 찾아 AFTER - BEFORE를 계산한다.
+-- 실행되는 SQL은 week4-05-handler-only.sql에서 확인한다. 데이터·인덱스를 변경하지 않는다.
+-- 아래 세 문장은 원리를 보여주는 블록이다. 확장에서 실행하면 자동 COUNT가 섞일 수 있다.
+-- 같은 연결에서 직전·직후 차이를 계산한다. ANALYZE는 이 구간 밖에서 실행한다.
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+-- 관찰: read_key 증가 1·read_next 증가 19.
+-- 첫 항목을 키로 얻고 다음 항목 19개를 읽어 총 20개를 반환했다.
+-- 기존 브랜드 인덱스에서는 key 1·next 99: 구간 전체를 확인한 뒤 정렬해야 했다.
+-- 새 인덱스에서는 ANALYZE의 Index lookup 실제 rows 20, Sort 없음.
+-- 이름은 인덱스에 없어 실제 상품 행 조회가 필요하다. 아직 커버링 조회는 아니다.
+-- Handler는 InnoDB 내부 기본키 조회 횟수·트리 높이·디스크 접근 수를 직접 세지 않는다.
+
+-- Leaf 키 순서를 이해하기 위한 보조 조회. 물리 페이지 덤프가 아니다.
+-- 이 보조 쿼리만 특정 인덱스를 명시한다.
+SELECT brand_id, deleted_at, price, created_at, id
+FROM product FORCE INDEX (idx_product_brand_price)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 6;
+
+--삭제하고 테스트
+DROP INDEX idx_product_brand_price ON product;
+```
+
+</details>
+
+<details>
+<summary>week4-06-implicit-id.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 06: 기본키 자동 포함과 id DESC 정렬을 구분한다.
+-- 비교용 인덱스는 자동 실험 후 삭제했다. 직접 재실험할 때만 생성한다.
+-- CREATE INDEX idx_product_brand_price_time
+-- ON product (brand_id, deleted_at, price ASC, created_at DESC);
+-- ANALYZE TABLE product;
+
+-- 이 후보도 id를 기본키로 포함하지만, 요청한 id DESC와는 다르다.
+-- 후보의 동작만 분리하려고 FORCE INDEX를 사용한다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product FORCE INDEX (idx_product_brand_price_time)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+-- 비교: 05 인덱스는 동일 쿼리의 id DESC까지 맞춘다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product FORCE INDEX (idx_product_brand_price)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+-- 자동 포함 기본키 순서를 이해하는 보조 조회 (원래 쿼리와 ORDER BY가 다르다).
+SELECT brand_id, deleted_at, price, created_at, id
+FROM product FORCE INDEX (idx_product_brand_price_time)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id ASC
+LIMIT 6;
+
+-- 관찰: 같은 가격·생성 시각 안에서 id 1407 → 4407 → 7407 (ASC).
+-- 원래 요청은 7407 → 4407 → 1407 (DESC).
+-- id 미명시 후보: 실제 rows 99·Sort 있음, Handler key +1·next +99.
+-- id DESC 후보: 실제 rows 20·Sort 없음, Handler key +1·next +19.
+-- 반환 결과는 두 후보 모두 같은 20개다. 정렬 필요 여부가 다르다.
+-- 인덱스 할당량은 이번 통계에서 둘 다 400KiB였다.
+-- 기본키가 이미 포함되어 있으므로 id DESC 명시가 ID를 중복 저장한다고 보지 않는다.
+-- 필요 여부는 쿼리의 정렬 방향에 따라 결정한다.
+
+-- Handler는 확장의 자동 COUNT가 없는 실행기로 같은 연결 전후 차이를 확인한다.
+-- 재실험 후 이번 비교용 후보만 삭제한다.
+-- DROP INDEX idx_product_brand_price_time ON product;
+```
+
+</details>
+
+<details>
+<summary>week4-07-covering.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 07: 커버링은 특정 쿼리에 필요한 값을 인덱스에서 얻을 수 있는 관계다.
+-- 기존 05 인덱스는 유지한다. 먼저 이름 포함·제외만 비교한다.
+EXPLAIN
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+--실행계획
+-> Limit: 20 row(s)  (cost=34.6 rows=20) (actual time=0.133..0.167 rows=20 loops=1)
+    -> Index lookup on product using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.131..0.163 rows=20 loops=1)
+
+
+EXPLAIN
+SELECT id, brand_id, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+--실행계획
+-> Limit: 20 row(s)  (cost=11.4 rows=20) (actual time=0.071..0.0934 rows=20 loops=1)
+    -> Filter: (product.deleted_at is null)  (cost=11.4 rows=99) (actual time=0.068..0.0886 rows=20 loops=1)
+        -> Covering index lookup on product using idx_product_brand_price (brand_id=7, deleted_at=NULL)  (cost=11.4 rows=99) (actual time=0.0652..0.0839 rows=20 loops=1)
+
+
+-- 이름 포함: Using index condition, Index lookup. 이름은 실제 상품 행에서 가져온다.
+-- 이름 제외: Using where; Using index, Covering index lookup.
+-- 두 쿼리 모두 실제 20행·Sort 없음·Handler key +1 / next +19.
+-- Handler가 같아도 커버링 여부가 같은 것은 아니다.
+-- 기본키로 실제 행을 가져오는 InnoDB 내부 작업은 Handler에 별도로 나타나지 않는다.
+-- Using index condition은 커버링 표시가 아니다. Using index·Covering 노드로 확인한다.
+-- 이름 제외는 원리 실험이다. 실제 API에서 이름을 제거한다는 뜻은 아니다.
+
+-- 터미널에서 Handler 확인 (확장의 자동 COUNT 제외):
+-- docker compose -f docker/infra-compose.yml --profile benchmark exec -T mysql-benchmark sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --table -u root -D loopers_benchmark' < scripts/sql/week4-07-handler-only.sql
+
+-- 대안: 이름을 인덱스에 넣으면 원래 이름 포함 쿼리도 커버링이 된다.
+-- 비교용 후보는 자동 실험 후 삭제했다. 직접 재실험할 때만 생성한다.
+CREATE INDEX idx_product_brand_price_name
+ON product (brand_id, deleted_at, price ASC, created_at DESC, id DESC, name);
+-- ANALYZE TABLE product;
+-- name은 정렬 키들 뒤에 둬서 기존 ORDER BY 순서를 유지한다.
+-- 후보가 있을 때만 아래 쿼리가 실행된다. 후보 분리를 위해 힌트를 사용한다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product FORCE INDEX (idx_product_brand_price_name)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+--실행계획
+-> Limit: 20 row(s)  (cost=8.5 rows=20) (actual time=0.459..0.483 rows=20 loops=1)
+    -> Filter: (product.deleted_at is null)  (cost=8.5 rows=50) (actual time=0.456..0.478 rows=20 loops=1)
+        -> Covering index lookup on product using idx_product_brand_price_name (brand_id=7, deleted_at=NULL)  (cost=8.5 rows=50) (actual time=0.453..0.474 rows=20 loops=1)
+
+
+-- 이름 인덱스도 20행·Sort 없음이고 원래 응답과 모든 값이 같았다.
+-- 인덱스 할당량: 05 약 400KiB → 이름 포함 약 1,552KiB (이번 데이터·통계).
+-- 이름 변경 시 인덱스 항목 갱신도 필요하다. 쓰기 시간은 아직 측정하지 않았다.
+-- 재실험 후 후보만 제거한다.
+DROP INDEX idx_product_brand_price_name ON product;
+```
+
+</details>
+
+<details>
+<summary>week4-07-handler-only.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 같은 연결에서 각 SELECT 직전·직후 차이를 따로 계산한다. 이름 인덱스가 없는 05 상태용이다.
+SELECT 'WITH NAME - BEFORE' AS measurement;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT id, brand_id, name, price, created_at FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+SELECT 'WITH NAME - AFTER' AS measurement;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+SELECT 'WITHOUT NAME - BEFORE' AS measurement;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT id, brand_id, price, created_at FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+SELECT 'WITHOUT NAME - AFTER' AS measurement;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+```
+
+</details>
+
+<details>
+<summary>week4-08-index-prefix.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 08: 긴 인덱스의 앞부분으로 짧은 인덱스 역할을 대신할 수 있는가?
+-- 인덱스는 삭제하지 않는다. FORCE INDEX는 경로 비교용이다.
+
+-- 브랜드 조건만: 두 인덱스 모두 해당 99개를 찾는다.
+EXPLAIN ANALYZE
+SELECT p.* FROM product p FORCE INDEX (idx_product_brand_deleted)
+WHERE p.brand_id = 7 AND p.deleted_at IS NULL;
+EXPLAIN ANALYZE
+SELECT p.* FROM product p FORCE INDEX (idx_product_brand_price)
+WHERE p.brand_id = 7 AND p.deleted_at IS NULL;
+
+-- 실제 API의 활성 상품 전체 건수: 두 인덱스 모두 앞부분으로 같은 범위를 집계한다.
+EXPLAIN ANALYZE
+SELECT COUNT(*) FROM product p FORCE INDEX (idx_product_brand_deleted)
+WHERE p.brand_id = 7 AND p.deleted_at IS NULL
+  AND EXISTS (SELECT 1 FROM brand b WHERE b.id = p.brand_id AND b.deleted_at IS NULL);
+EXPLAIN ANALYZE
+SELECT COUNT(*) FROM product p FORCE INDEX (idx_product_brand_price)
+WHERE p.brand_id = 7 AND p.deleted_at IS NULL
+  AND EXISTS (SELECT 1 FROM brand b WHERE b.id = p.brand_id AND b.deleted_at IS NULL);
+
+-- 브랜드 삭제 대상 ID 조회: 기존 인덱스는 해당 구간에서 ID 순서, 긴 인덱스는 가격순.
+EXPLAIN ANALYZE
+SELECT p.id FROM product p FORCE INDEX (idx_product_brand_deleted)
+WHERE p.brand_id = 7 AND p.deleted_at IS NULL ORDER BY p.id;
+EXPLAIN ANALYZE
+SELECT p.id FROM product p FORCE INDEX (idx_product_brand_price)
+WHERE p.brand_id = 7 AND p.deleted_at IS NULL ORDER BY p.id;
+
+-- 관찰: 두 경로 모두 99개를 찾고 같은 결과를 만든다.
+-- ID 정렬 조회만 긴 인덱스에서 Sort가 추가됐다.
+-- 긴 인덱스의 왼쪽 연속 컬럼으로 찾을 수 있어도 같은 읽기 순서를 가진 것은 아니다.
+-- 삭제 연산 전체·동시성·쓰기는 이 실험에 포함하지 않았다.
+-- 기존 인덱스 제거 여부는 추가 쓰기/공간 비용과 이 조회의 정렬 비용을 함께 판단한다.
+-- Handler는 확장의 자동 COUNT가 없는 compare-week4-index-prefix.py로 확인했다.
+```
+
+</details>
+
+<details>
+<summary>week4-09-price-first.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- ①: 같은 열이라도 순서를 바꾸면 읽는 방식이 달라진다.
+-- 임시 후보는 실험 후 삭제했다. 재실험할 경우에만 생성한다.
+CREATE INDEX idx_product_price_first
+ON product (price ASC, brand_id, deleted_at, created_at DESC, id DESC);
+ANALYZE TABLE product;
+
+-- 쿼리는 05와 동일하다. 가격을 맨 앞으로 옮기고 나머지 조건·동점 방향은 유지했다.
+-- 이번 비교만 FORCE INDEX로 후보를 분리한다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product FORCE INDEX (idx_product_price_first)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+--실행계획
+-> Limit: 20 row(s)  (cost=70 rows=0.2) (actual time=1.62..3.01 rows=20 loops=1)
+    -> Filter: ((product.brand_id = 7) and (product.deleted_at is null))  (cost=70 rows=0.2) (actual time=1.62..3.01 rows=20 loops=1)
+        -> Index scan on product using idx_product_price_first  (cost=70 rows=20) (actual time=0.499..2.87 rows=1600 loops=1)
+
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product FORCE INDEX (idx_product_brand_price)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+--실행계획
+-> Limit: 20 row(s)  (cost=17.9 rows=20) (actual time=0.0459..0.0602 rows=20 loops=1)
+    -> Index lookup on product using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=17.9 rows=51) (actual time=0.045..0.0581 rows=20 loops=1)
+
+-- 가격 우선: 가격순으로 다른 브랜드도 함께 읽고 brand_id·deleted_at을 필터한다.
+-- 관찰: Index scan 1,600행 → Filter 20행 → Limit 20행. Sort는 없다.
+-- 브랜드 우선: (7, NULL) 구간을 찾아 20행만 읽는다. Sort는 없다.
+-- 즉 Sort가 없다는 사실만으로 효율적이라고 판단하지 않는다.
+-- Handler 차분: 가격 우선 first +1·key +1·next +1599, 브랜드 우선 key +1·next +19.
+-- first·key는 페이지 방문 수가 아니다. 측정은 자동 COUNT 없는 클라이언트에서 했다.
+-- 결과·순서는 같다. 읽는 범위가 다르다.
+-- 이번 고정 seed에서는 1,600개였다. 브랜드 7 상품의 가격 분포가 달라지면 값도 달라진다.
+-- 힌트 없는 자동 선택은 두 후보 중 기존 브랜드 우선 인덱스를 선택했다.
+
+-- 같은 조건에서 실제 자동 선택 확인 (후보 존재 여부에 따라 possible_keys가 달라짐).
+EXPLAIN
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+-- 재실험 후 이번 후보만 제거한다.
+DROP INDEX idx_product_price_first ON product;
+```
+
+</details>
+
+<details>
+<summary>week4-10-brand-in.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- ②: 브랜드 하나의 가격순과 두 브랜드를 합친 가격순은 다르다.
+/*
+idx_product_brand_deleted
+idx_product_brand_price
+이 인덱스 두개 있을 경우 테스트
+*/
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=34.6 rows=20) (actual time=0.552..0.791 rows=20 loops=1)
+    -> Index lookup on product using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.534..0.771 rows=20 loops=1)
+
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at FROM product
+WHERE brand_id IN (7, 8) AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=89.6 rows=20) (actual time=0.989..0.992 rows=20 loops=1)
+    -> Sort: product.price, product.created_at DESC, product.id DESC, limit input to 20 row(s) per chunk  (cost=89.6 rows=198) (actual time=0.988..0.99 rows=20 loops=1)
+        -> Index range scan on product using idx_product_brand_deleted over (brand_id = 7 AND deleted_at = NULL) OR (brand_id = 8 AND deleted_at = NULL), with index condition: ((product.brand_id in (7,8)) and (product.deleted_at is null))  (cost=89.6 rows=198) (actual time=0.232..0.916 rows=198 loops=1)
+
+
+-- 긴 인덱스도 확인: 각 브랜드 구간 안은 가격순이지만 두 구간을 합친 순서는 가격순이 아니다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product FORCE INDEX (idx_product_brand_price)
+WHERE brand_id IN (7, 8) AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=89.6 rows=20) (actual time=0.737..0.741 rows=20 loops=1)
+    -> Sort: product.price, product.created_at DESC, product.id DESC, limit input to 20 row(s) per chunk  (cost=89.6 rows=198) (actual time=0.736..0.738 rows=20 loops=1)
+        -> Index range scan on product using idx_product_brand_price over (brand_id = 7 AND deleted_at = NULL) OR (brand_id = 8 AND deleted_at = NULL), with index condition: ((product.brand_id in (7,8)) and (product.deleted_at is null))  (cost=89.6 rows=198) (actual time=0.136..0.641 rows=198 loops=1)
+
+
+-- 관찰: 단일 브랜드 20개 접근·Sort 없음. IN은 198개 접근·Sort 있음.
+-- 힌트 없는 IN은 기존 브랜드 인덱스를 선택했다. 긴 인덱스 강제에서도 Sort가 남았다.
+-- 조건 변경이므로 결과는 단일 브랜드와 다르다. 각각의 기대값을 검증했다.
+-- Handler: 단일 key +1·next +19, IN key +2·next +198.
+-- 자동 COUNT가 없는 클라이언트에서 전후 차이로 확인한 값이다.
+```
+
+</details>
+
+<details>
+<summary>week4-11-deleted-condition.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- ③: deleted_at이 인덱스에 없으면 얼마나 더 읽는가?
+-- 실제 product는 변경하지 않는다. 이 복제 테이블은 자동 실험 후 삭제된 상태다.
+-- 직접 따라갈 때 아래 준비를 선택 실행하고, 마지막에 복제 테이블만 정리한다.
+-- 같은 이름의 테이블이 이미 있으면 용도를 확인하고 진행한다.
+CREATE TABLE w4_product_deleted_lab LIKE product;
+INSERT INTO w4_product_deleted_lab SELECT * FROM product;
+CREATE INDEX idx_lab_without_deleted ON w4_product_deleted_lab
+    (brand_id, price ASC, created_at DESC, id DESC);
+ANALYZE TABLE w4_product_deleted_lab;
+
+-- 원래 삭제 분포: 이번 데이터에서는 두 후보 모두 20개만 읽었다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM w4_product_deleted_lab FORCE INDEX (idx_lab_without_deleted)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=26 rows=10) (actual time=0.198..0.334 rows=20 loops=1)
+    -> Filter: (w4_product_deleted_lab.deleted_at is null)  (cost=26 rows=10) (actual time=0.195..0.329 rows=20 loops=1)
+        -> Index lookup on w4_product_deleted_lab using idx_lab_without_deleted (brand_id=7)  (cost=26 rows=100) (actual time=0.193..0.325 rows=20 loops=1)
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM w4_product_deleted_lab FORCE INDEX (idx_product_brand_price)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=17.9 rows=20) (actual time=0.137..0.164 rows=20 loops=1)
+    -> Index lookup on w4_product_deleted_lab using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (w4_product_deleted_lab.deleted_at is null)  (cost=17.9 rows=51) (actual time=0.132..0.159 rows=20 loops=1)
+
+
+-- 복제 테이블에서만 저가 활성 상품 70개를 삭제 상태로 만든다.
+UPDATE w4_product_deleted_lab
+SET deleted_at = '2026-10-14 00:00:00'
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 70;
+
+-- 같은 두 쿼리를 다시 확인한다.
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM w4_product_deleted_lab FORCE INDEX (idx_lab_without_deleted)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=26 rows=10) (actual time=0.765..0.877 rows=20 loops=1)
+    -> Filter: (w4_product_deleted_lab.deleted_at is null)  (cost=26 rows=10) (actual time=0.761..0.871 rows=20 loops=1)
+        -> Index lookup on w4_product_deleted_lab using idx_lab_without_deleted (brand_id=7)  (cost=26 rows=100) (actual time=0.344..0.86 rows=91 loops=1)
+
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM w4_product_deleted_lab FORCE INDEX (idx_product_brand_price)
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+-> Limit: 20 row(s)  (cost=17.9 rows=20) (actual time=0.0497..0.0725 rows=20 loops=1)
+    -> Index lookup on w4_product_deleted_lab using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (w4_product_deleted_lab.deleted_at is null)  (cost=17.9 rows=51) (actual time=0.049..0.0706 rows=20 loops=1)
+
+
+
+-- 미포함 후보: (brand_id=7) 가격순으로 읽고 실제 행의 deleted_at을 확인한다.
+-- 70개 추가 삭제 + 원래 삭제된 상품 하나 + 반환할 20개 = 실제 접근 91개.
+-- 포함 후보: (7, NULL) 구간부터 읽어 20개만 접근한다.
+-- 둘 다 Sort는 없다. 이번 조건에서 결과·순서는 같다.
+-- Handler next 증가: 미포함 90, 포함 19.
+-- 모든 순서 비교가 끝나면 이번에 만든 복제 테이블만 정리한다.
+DROP TABLE w4_product_deleted_lab;
+```
+
+</details>
+
+<details>
+<summary>week4-12-offset-cursor.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- ④: 같은 05 정렬 인덱스에서 OFFSET과 커서 비교.
+-- 브랜드 7의 활성 상품이 99개라 OFFSET 900 대신 60을 사용한다.
+
+/*
+idx_product_brand_deleted
+idx_product_brand_price
+이 인덱스 두개 있을 경우 테스트
+*/
+
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20 OFFSET 60;
+
+-> Limit/Offset: 20/60 row(s)  (cost=34.6 rows=20) (actual time=0.318..0.347 rows=20 loops=1)
+    -> Index lookup on product using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.16..0.34 rows=80 loops=1)
+
+
+-- 이전 페이지 마지막 상품(60번째)을 확인한다. 이 준비 비용은 커서 측정에 포함하지 않는다.
+SELECT price, created_at, id FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 1 OFFSET 59;
+-- 고정 seed의 결과: price=66000, created_at='2026-01-28 00:00:00', id=9207.
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+  AND (
+      price > 66000
+      OR (price = 66000 AND created_at < '2026-01-28 00:00:00')
+      OR (price = 66000 AND created_at = '2026-01-28 00:00:00' AND id < 9207)
+  )
+ORDER BY price ASC, created_at DESC, id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=18.3 rows=20) (actual time=0.141..0.259 rows=20 loops=1)
+    -> Index range scan on product using idx_product_brand_price over (brand_id = 7 AND deleted_at = NULL AND price = 66000 AND created_at = '2026-01-28 00:00:00.000000' AND 9207 < id) OR (brand_id = 7 AND deleted_at = NULL AND price = 66000 AND '2026-01-28 00:00:00.000000' < created_at) OR (brand_id = 7 AND deleted_at = NULL AND 66000 < price), with index condition: ((product.brand_id = 7) and (product.deleted_at is null) and ((product.price > 66000) or ((product.price = 66000) and (product.created_at < TIMESTAMP'2026-01-28 00:00:00')) or ((product.created_at = TIMESTAMP'2026-01-28 00:00:00') and (product.price = 66000) and (product.id < 9207))))  (cost=18.3 rows=39) (actual time=0.137..0.253 rows=20 loops=1)
+
+
+-- 가격 ASC라 다음 가격은 >, 생성 시각·ID DESC라 다음 값은 < 조건이다.
+-- 반환한 전체 컬럼·순서는 OFFSET 결과와 같다.
+-- OFFSET: 실제 80개 읽고 앞의 60개 버림. Handler key +1·next +79.
+-- 커서: 20개 접근. OR 범위 탐색으로 key +3·next +19 관찰. Sort는 둘 다 없다.
+-- 읽기량은 줄었지만 이번 소규모 SQL 시간 중앙값은 OFFSET 0.177ms·커서 0.191ms였다.
+-- 커서가 항상 빠르다고 결론 내리지 않는다. 깊이가 더 큰 경우는 별도 데이터가 필요하다.
+-- 실제 사용은 이전 페이지에서 받은 커서가 있어야 한다. 임의 페이지 이동과 계약이 다르다.
+```
+
+</details>
+
+<details>
+<summary>week4-13-like-product-index.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 상품 20개의 페이지를 고른 뒤 해당 상품들의 좋아요 수를 묶음 집계한다.
+-- 기존 유니크 인덱스는 (user_id, product_id)라 사용자 조건 없는 이번 집계는 전체를 훑었다.
+EXPLAIN ANALYZE
+SELECT product_id, COUNT(id)
+FROM product_like
+WHERE product_id IN (
+    7407,4407,1407,9407,6407,3407,407,8407,5407,2407,
+    7707,4707,1707,9707,6707,3707,707,8707,5707,2707
+)
+GROUP BY product_id;
+
+-- 아래 DDL은 인덱스가 없는 DB에 한 번만 적용한다. 현재는 적용 완료 상태다.
+-- CREATE INDEX idx_product_like_product ON product_like (product_id);
+-- ANALYZE TABLE product_like;
+
+-- 같은 EXPLAIN ANALYZE를 적용 전후 비교한다.
+-- 기존: 전체 인덱스 스캔 62,756개 → 필터 248개 → 집계 18행.
+-- 추가: product_id 범위 스캔 248개 → 집계 18행.
+-- 20개 상품 중 좋아요 없는 2개는 SQL 그룹 결과에 없다. 앱에서 0으로 채운다.
+-- InnoDB 기본키 id도 보조 인덱스에 포함돼 이 집계는 커버링이다.
+-- 유니크 인덱스는 중복 방지·사용자별 관계 탐색에 필요하므로 유지한다.
+-- 등록·취소는 새 인덱스도 갱신한다. 읽기 이득과 유지 비용을 함께 본다.
+```
+
+</details>
+
+<details>
+<summary>week4-14-page-first-join.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 14: 상품 페이지를 먼저 고른 뒤 브랜드 정보·좋아요 집계를 한 번에 조회한다.
+-- 현재 상품 가격·좋아요 product_id 인덱스를 유지한다. 데이터·인덱스 변경 없음.
+-- 실제 API 비교에서 브랜드 존재 확인과 totalCount는 별도 쿼리로 유지했다.
+EXPLAIN ANALYZE
+SELECT pg.id, pg.name, pg.price, pg.created_at,
+       pg.brand_id, pg.brand_name, pg.brand_description,
+       COUNT(l.id) AS like_count
+FROM (
+    SELECT p.id, p.name, p.price, p.created_at,
+           b.id AS brand_id, b.name AS brand_name, b.description AS brand_description
+    FROM product p
+    JOIN brand b ON b.id = p.brand_id
+    WHERE p.deleted_at IS NULL
+      AND b.deleted_at IS NULL
+      AND p.brand_id = 7
+    ORDER BY p.price ASC, p.created_at DESC, p.id DESC
+    LIMIT 20 OFFSET 0
+) AS pg
+LEFT JOIN product_like l ON l.product_id = pg.id
+GROUP BY pg.id, pg.name, pg.price, pg.created_at,
+         pg.brand_id, pg.brand_name, pg.brand_description
+ORDER BY pg.price ASC, pg.created_at DESC, pg.id DESC;
+
+-- 상품 페이지의 LIMIT은 JOIN 전에 적용한다. 좋아요 행에 직접 LIMIT을 걸지 않는다.
+-- LEFT JOIN으로 좋아요 0개인 상품 2개도 유지한다.
+-- 관찰: 상품 20행 → 좋아요 lookup 평균 12.4행 × 20회 → LEFT JOIN 250행
+-- → 임시 테이블 집계 20행 → 최종 Sort 20행.
+-- 상품 후보의 Sort는 가격 인덱스로 없어졌지만 JOIN 후 최종 Sort는 남는다.
+-- 5 SELECT → 3 SELECT (브랜드 확인, COUNT, 위 JOIN).
+-- 실험 HTTP 중앙값: 별도 집계 16.35ms, JOIN 10.60ms. 방식별 30회, 같은 서버에서 순서 교대.
+-- 모든 운영 조건에서 더 빠르다는 보장은 아니다.
+-- JDBC 조회용 투영과 브랜드 조회 통합까지 포함한 후보 비교다.
+-- 운영 코드는 변경하지 않았다. 실험 전용 구성은 scripts/experiments/ 아래에 있다.
+
+-- Handler 보완 실측 (자동 COUNT 없는 SQL 클라이언트, 같은 연결 전후 차분):
+-- 현재 실제 SQL 상품 페이지+좋아요 2 SELECT: key +22·next +267·rnd_next +0.
+-- 위 JOIN 1 SELECT: key +272·next +267·rnd_next +42.
+-- 임시 집계·파생 테이블 요청도 포함되므로 key 272를 상품 272개로 해석하지 않는다.
+-- 3회 반복값이 같았다. next가 줄었다는 결과가 아니라 내부 작업의 차이를 관찰한 것이다.
+-- HTTP의 5→3 왕복 감소와 이 SQL 카운터는 별도 근거다. JOIN 채택은 후속 검토로 둔다.
+-- 전체 결과·측정 원본 링크: docs/week4/handler-results.md.
+```
+
+</details>
+
+<details>
+<summary>week4-15-100k-scale-check.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 목적: 05(idx_product_brand_price, week4-05-price-index.sql)에서 확인한 실행 계획이
+-- 브랜드당 상품 수가 10배(약 100개 -> 약 1,000개)로 늘어난 loopers_benchmark_100k에서도
+-- 같은 인덱스·같은 계획을 쓰는지 확인한다. 쿼리 자체는 05와 동일하다.
+-- 이 파일은 loopers_benchmark_100k를 대상으로 실행한다. DB 이름을 꼭 확인한다.
+
+-- 0단계: 통계 상태를 먼저 확인한다. 적재 직후라 추정치가 실제와 다를 수 있다(TABLE_ROWS 등).
+SHOW TABLE STATUS LIKE 'product';
+
+-- 1단계: 통계 갱신 전 실행 계획.
+EXPLAIN
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+-- 05에서 10k 기준 기록: cost=34.6 rows=99 (index lookup, Sort 없음)
+-- 여기 actual rows·cost를 10k 기록과 나란히 적어 비교한다.
+
+
+-- 2단계: ANALYZE TABLE 실행 후 다시 확인한다. 데이터는 바꾸지 않는다.
+ANALYZE TABLE product;
+
+EXPLAIN
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+EXPLAIN ANALYZE
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+
+-- key가 idx_product_brand_price가 아니거나 Extra에 Using filesort/Using temporary가 보이면
+-- 10k 때와 계획이 달라진 것이다. 그 경우만 추가로 들여다본다.
+
+
+-- 3단계: Handler 카운터로 실제 읽은 레코드 수를 비교한다.
+-- VS Code 확장은 SELECT 뒤에 자동으로 COUNT를 붙여 보내는 경우가 있어
+-- (05 파일의 49~53번째 줄 설명과 동일한 이유로) 이 블록은 터미널에서 실행하는 걸 추천한다.
+--
+-- docker compose -f docker/infra-compose.yml --profile benchmark exec -T mysql-benchmark \
+--   sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --table -u root -D loopers_benchmark_100k' \
+--   < scripts/sql/week4-15-100k-scale-check.sql
+--
+-- 확장에서 직접 돌리고 싶으면 아래 두 SHOW 사이의 SELECT 하나만 선택해서 실행한다.
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT id, brand_id, name, price, created_at
+FROM product
+WHERE brand_id = 7 AND deleted_at IS NULL
+ORDER BY price ASC, created_at DESC, id DESC
+LIMIT 20;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+-- 05의 10k 기록: read_key +1, read_next +19 (LIMIT 20이라 딱 20개만 읽음, Sort 없음).
+-- 100k에서도 브랜드당 상품 수가 10배 늘었을 뿐 LIMIT 20·인덱스 순서 접근은 그대로이므로
+-- read_next가 여전히 19 근처면 "인덱스가 LIMIT만큼만 읽는다"는 05의 결론이 스케일에서도 유지된 것이다.
+-- 만약 read_next가 브랜드당 상품 수(~1,000)에 가깝게 뛰면, 그 인덱스를 안 쓰고
+-- 브랜드 구간 전체를 훑어 정렬했다는 뜻이니 EXPLAIN의 key·Extra를 다시 확인한다.
+```
+
+</details>
+
+<details>
+<summary>week4-16-100k-like-join-check.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 목적: 13(idx_product_like_product, week4-13-like-product-index.sql)에서 확인한
+-- "범위 스캔으로 줄었다"는 결론이, product_like 행 수가 10배(62,756 -> 약 628,186)로
+-- 늘어난 loopers_benchmark_100k에서도 유지되는지 확인한다.
+-- 이 20개 상품 ID는 15번 파일(week4-15-100k-scale-check.sql)에서 브랜드 7을
+-- price ASC로 조회했을 때 실제로 나온 100k 페이지 1의 ID다. 10k 때 쓰던 ID(7407 등)를
+-- 그대로 쓰지 않는다 — 브랜드당 상품 수가 달라져 같은 ID가 같은 페이지에 있지 않다.
+-- 이 파일은 loopers_benchmark_100k를 대상으로 실행한다.
+
+-- 0단계: product_like 전체 행 수 확인 (10k 기록: 62,756 -> 전체 스캔 비용의 기준값).
+SELECT COUNT(*) FROM product_like;
+
+-- 1단계: 13과 동일한 쿼리. 상품 ID만 100k 페이지 1 기준으로 바꿨다.
+EXPLAIN ANALYZE
+SELECT product_id, COUNT(id)
+FROM product_like
+WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+)
+GROUP BY product_id;
+
+-- 13의 10k 기록: idx_product_like_product 적용 후 전체 62,756개 스캔 -> product_id 범위
+-- 스캔 248개로 줄었다(20개 상품 x 평균 like 수). 아래에서 비교할 것:
+-- - key가 idx_product_like_product인지 (PRIMARY나 full scan으로 바뀌면 다른 계획)
+-- - EXPLAIN ANALYZE의 실제 rows 합이 "상품 수 x 10배 scaled like 수" 근처인지
+--   (브랜드·상품 수는 그대로 10배했으니 상품당 좋아요 평균도 그대로이면 248 근처가 맞다)
+-- - Extra에 Using index(커버링)가 유지되는지
+
+
+-- 2단계: 통계 갱신 후에도 같은 계획인지 확인.
+ANALYZE TABLE product_like;
+
+EXPLAIN ANALYZE
+SELECT product_id, COUNT(id)
+FROM product_like
+WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+)
+GROUP BY product_id;
+
+
+-- 3단계: Handler 카운터로 실제 읽은 레코드 수 비교 (앱에서 보는 단일 호출 기준).
+-- 05 때처럼 VS Code 확장의 자동 COUNT가 섞일 수 있으니 터미널에서 실행하는 걸 추천한다.
+--
+-- docker compose -f docker/infra-compose.yml --profile benchmark exec -T mysql-benchmark \
+--   sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --table -u root -D loopers_benchmark_100k' \
+--   < scripts/sql/week4-16-100k-like-join-check.sql
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT product_id, COUNT(id)
+FROM product_like
+WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+)
+GROUP BY product_id;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+
+-- read_key·read_next 합이 "전체 628,186개를 훑은 흔적"이면(수만 단위로 뜀) 범위 스캔이
+-- 아니라 전체 스캔으로 바뀐 것이다. 20개 상품의 좋아요 합(수백 단위) 근처면 13의 결론이
+-- 10배 스케일에서도 유지된 것이다.
+
+-- 범위 한정: 이 결론은 좋아요가 상품마다 고르게 분포된 경우에만 해당한다. 같은 인덱스를
+-- 써도 좋아요가 한 상품에 쏠리면 비용이 달라진다 — 그 경우는
+-- week4-17-100k-hotspot.sql(별도 복제 DB loopers_benchmark_100k_hotspot)에서 확인한다.
+```
+
+</details>
+
+<details>
+<summary>week4-17-100k-hotspot.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 목적: week4 과제의 "선택 심화 — 데이터 쏠림" 항목 확인.
+-- 13(idx_product_like_product)의 "범위 스캔으로 줄었다"는 결론이, 좋아요가 한 상품에만
+-- 몰렸을 때도 유지되는지 본다. 캐시는 아직 붙이지 않은 순수 SQL/인덱스 단계의 확인이다.
+--
+-- 대상 DB: loopers_benchmark_100k_hotspot (loopers_benchmark_100k를 복제한 별도 DB).
+-- 원본 100k DB는 건드리지 않는다. 좋아요 쏠림 데이터는 scripts/seed-week4-100k-hotspot.py로 넣었다:
+--   - 기존 유저 200명 + 신규 유저 50,000명(id 201~50200)
+--   - 상품 97407(브랜드 7, 가격 6000, 1페이지 1번째)에만 신규 유저 5만 명이 전부 좋아요
+--   - product_like: 628,186 -> 678,186행, 그중 97407이 50,002개(기존 2 + 신규 50,000)
+--
+-- 비교 대상:
+--   핫스팟 페이지 = 브랜드 7의 1페이지(97407 포함, 가격순 상위 20개)
+--   일반 페이지   = 브랜드 7의 2페이지(97407 미포함, 가격순 21~40번째) — 같은 브랜드·가격대라 조건은 최대한 맞췄다.
+
+-- loopers_benchmark_100k와 _hotspot 둘 다 연결돼 있으면 어느 쪽이 활성 연결인지에 따라
+-- 결과가 달라진다. 아래 USE로 대상을 명시해 혼동을 없앤다.
+USE loopers_benchmark_100k_hotspot;
+
+-- 1단계: 실행 계획 비교.
+EXPLAIN ANALYZE
+SELECT product_id, COUNT(id)
+FROM product_like
+WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+)
+GROUP BY product_id;
+-- 핫스팟 페이지. 97407 하나가 50,002개라 Group aggregate의 실제 rows가 크게 뛰는지 본다.
+
+-> Group aggregate: count(product_like.id)  (cost=30407 rows=91546) (actual time=0.0565..15.4 rows=18 loops=1)
+    -> Filter: (product_like.product_id in (97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,67407,64407,61407,58407,55407,52407,49407,46407,43407,40407))  (cost=20288 rows=101193) (actual time=0.0478..13.1 rows=50093 loops=1)
+        -> Covering index range scan on product_like using idx_product_like_product over (product_id = 40407) OR (product_id = 43407) OR (18 more)  (cost=20288 rows=101193) (actual time=0.0461..9.29 rows=50093 loops=1)
+
+
+EXPLAIN ANALYZE
+SELECT product_id, COUNT(id)
+FROM product_like
+WHERE product_id IN (
+    37407,34407,31407,28407,25407,19407,16407,13407,10407,7407,
+    4407,1407,99407,96407,93407,90407,87407,84407,81407,78407
+)
+GROUP BY product_id;
+-- 일반 페이지. 97407이 없으니 모든 상품이 비슷하게 적은 좋아요 수를 가진다.
+
+-> Group aggregate: count(product_like.id)  (cost=77.2 rows=256) (actual time=0.0618..0.243 rows=19 loops=1)
+    -> Filter: (product_like.product_id in (37407,34407,31407,28407,25407,19407,16407,13407,10407,7407,4407,1407,99407,96407,93407,90407,87407,84407,81407,78407))  (cost=51.6 rows=256) (actual time=0.0277..0.219 rows=255 loops=1)
+        -> Covering index range scan on product_like using idx_product_like_product over (product_id = 1407) OR (product_id = 4407) OR (18 more)  (cost=51.6 rows=256) (actual time=0.0259..0.19 rows=255 loops=1)
+
+
+-- 2단계: 서버가 실제로 쓴 시간을 같은 연결에서 비교한다 (SHOW PROFILES, deprecated지만 동작함).
+SET profiling = 1;
+
+SELECT product_id, COUNT(id) FROM product_like WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+) GROUP BY product_id;
+
+SELECT product_id, COUNT(id) FROM product_like WHERE product_id IN (
+    37407,34407,31407,28407,25407,19407,16407,13407,10407,7407,
+    4407,1407,99407,96407,93407,90407,87407,84407,81407,78407
+) GROUP BY product_id;
+
+SELECT product_id, COUNT(id) FROM product_like WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+) GROUP BY product_id;
+
+SELECT product_id, COUNT(id) FROM product_like WHERE product_id IN (
+    37407,34407,31407,28407,25407,19407,16407,13407,10407,7407,
+    4407,1407,99407,96407,93407,90407,87407,84407,81407,78407
+) GROUP BY product_id;
+
+SHOW PROFILES;
+-- 홀수 번째(1,3)가 핫스팟 페이지, 짝수 번째(2,4)가 일반 페이지다.
+-- Duration을 비교해서 핫스팟 페이지가 얼마나 더 오래 걸리는지 본다.
+
+
+-- 3단계: Handler 카운터로 실제 읽은 행 수 비교 (연결 하나에서 전/후만 비교).
+-- docker compose -f docker/infra-compose.yml --profile benchmark exec -T mysql-benchmark \
+--   sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --table -u root -D loopers_benchmark_100k_hotspot' \
+--   < scripts/sql/week4-17-100k-hotspot.sql
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT product_id, COUNT(id) FROM product_like WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+) GROUP BY product_id;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+-- 핫스팟 페이지의 read_next 증가분. idx_product_like_product가 커버링 범위 스캔을 유지한다면
+-- 이 증가분은 "20개 상품의 좋아요 총합"(약 50,100개) 근처여야 한다 — 97407 혼자서 그만큼을 차지한다.
+
+SHOW SESSION STATUS LIKE 'Handler_read%';
+SELECT product_id, COUNT(id) FROM product_like WHERE product_id IN (
+    37407,34407,31407,28407,25407,19407,16407,13407,10407,7407,
+    4407,1407,99407,96407,93407,90407,87407,84407,81407,78407
+) GROUP BY product_id;
+SHOW SESSION STATUS LIKE 'Handler_read%';
+-- 일반 페이지의 read_next 증가분. 20개 상품의 좋아요 총합(수십~백 단위) 근처여야 한다.
+
+-- 결론 기준: 계획(key)이 둘 다 idx_product_like_product 범위 스캔으로 같다면, 인덱스 자체는
+-- 안 깨진 것이다. 다만 읽는 "양"은 핫스팟 상품의 좋아요 수에 비례해서 커지므로, 시간도 그만큼
+-- 늘어난다 — 이게 "인덱스가 있어도 쏠린 상품은 그 상품의 몫만큼 비싸다"는 결론이다.
+```
+
+</details>
+
+<details>
+<summary>week4-18-100k-before-after.sql — 정리 전 설명·사용자 메모 원본</summary>
+
+```sql
+-- 10만 건 핵심 비교를 직접 확인하는 읽기 전용 보조 SQL.
+-- 자동 측정 원본: docs/week4/measurements/100k-read-write-skew.json
+-- 자동 측정은 추가 인덱스가 실제로 없는 복제 테이블과 있는 복제를 비교했다.
+-- 여기서는 원본 인덱스를 삭제하지 않고 IGNORE INDEX로 해당 읽기 후보만 제외한다.
+-- IGNORE INDEX는 쓰기 유지 비용을 없애지 않으므로 쓰기 비교에 쓰지 않는다.
+USE loopers_benchmark_100k;
+
+EXPLAIN ANALYZE
+SELECT id,brand_id,name,price,created_at
+FROM product IGNORE INDEX (idx_product_brand_price)
+WHERE brand_id=7 AND deleted_at IS NULL
+ORDER BY price ASC,created_at DESC,id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=346 rows=20) (actual time=7.89..7.89 rows=20 loops=1)
+    -> Sort: product.price, product.created_at DESC, product.id DESC, limit input to 20 row(s) per chunk  (cost=346 rows=990) (actual time=7.88..7.89 rows=20 loops=1)
+        -> Index lookup on product using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=346 rows=990) (actual time=2.6..7.68 rows=990 loops=1)
+
+
+EXPLAIN ANALYZE
+SELECT id,brand_id,name,price,created_at
+FROM product
+WHERE brand_id=7 AND deleted_at IS NULL
+ORDER BY price ASC,created_at DESC,id DESC LIMIT 20;
+
+-> Limit: 20 row(s)  (cost=346 rows=20) (actual time=0.365..0.371 rows=20 loops=1)
+    -> Index lookup on product using idx_product_brand_price (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=346 rows=990) (actual time=0.364..0.369 rows=20 loops=1)
+
+
+EXPLAIN ANALYZE
+SELECT product_id,COUNT(id)
+FROM product_like IGNORE INDEX (idx_product_like_product)
+WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+)
+GROUP BY product_id;
+
+-> Table scan on <temporary>  (actual time=126..126 rows=18 loops=1)
+    -> Aggregate using temporary table  (actual time=126..126 rows=18 loops=1)
+        -> Filter: (product_like.product_id in (97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,67407,64407,61407,58407,55407,52407,49407,46407,43407,40407))  (cost=63391 rows=312928) (actual time=70.3..125 rows=93 loops=1)
+            -> Covering index scan on product_like using uk_product_like_user_product  (cost=63391 rows=625856) (actual time=1.03..96.9 rows=628186 loops=1)
+
+
+EXPLAIN ANALYZE
+SELECT product_id,COUNT(id)
+FROM product_like
+WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+)
+GROUP BY product_id;
+
+-> Table scan on <temporary>  (actual time=126..126 rows=18 loops=1)
+    -> Aggregate using temporary table  (actual time=126..126 rows=18 loops=1)
+        -> Filter: (product_like.product_id in (97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,67407,64407,61407,58407,55407,52407,49407,46407,43407,40407))  (cost=63391 rows=312928) (actual time=70.3..125 rows=93 loops=1)
+            -> Covering index scan on product_like using uk_product_like_user_product  (cost=63391 rows=625856) (actual time=1.03..96.9 rows=628186 loops=1)
+
+
+-- 동일한 상품 20개로 일반 1페이지와 hotspot 1페이지를 비교한다.
+-- 위 마지막 쿼리와 아래 쿼리의 ID가 같고 97407의 좋아요만 5만 개 늘었다.
+EXPLAIN ANALYZE
+SELECT product_id,COUNT(id)
+FROM loopers_benchmark_100k_hotspot.product_like
+WHERE product_id IN (
+    97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,
+    67407,64407,61407,58407,55407,52407,49407,46407,43407,40407
+)
+GROUP BY product_id;
+
+-> Group aggregate: count(loopers_benchmark_100k_hotspot.product_like.id)  (cost=30541 rows=91546) (actual time=0.0497..21.5 rows=18 loops=1)
+    -> Filter: (loopers_benchmark_100k_hotspot.product_like.product_id in (97407,94407,91407,88407,85407,82407,79407,76407,73407,70407,67407,64407,61407,58407,55407,52407,49407,46407,43407,40407))  (cost=20421 rows=101193) (actual time=0.0368..18.2 rows=50093 loops=1)
+        -> Covering index range scan on product_like using idx_product_like_product over (product_id = 40407) OR (product_id = 43407) OR (18 more)  (cost=20421 rows=101193) (actual time=0.0345..13.3 rows=50093 loops=1)
+
+
+-- 페이지는 20행으로 끝나도 totalCount는 브랜드 후보 전체를 읽는다.
+EXPLAIN ANALYZE
+SELECT COUNT(id) FROM product WHERE brand_id=7 AND deleted_at IS NULL;
+```
+
+</details>
+
 <a id="counter-experiment"></a>
 
 ## 15. 좋아요 카운터 비정규화 후보와 동시 부하 비교
@@ -575,6 +1817,59 @@ SQL 캡처로 좋아요 집계 대신 `select product_id, like_count from produc
 
 [측정 · 100k-brand-dedup-api.json](measurements/index-results.json). 직전 측정([100k-counter-api.json](measurements/like-counter-results.json), 중앙값 17.84ms·13.09ms, SELECT 5개)보다 낮게 나왔지만, 별도 JVM·소표본 간 비교이고 브랜드 PK 단건 조회 자체가 이미 저렴해서 이 차이 전부를 이 변경의 효과로 단정하지 않는다. SQL 개수를 줄였다는 사실과 체감 가능한 지연 개선을 구분한다.
 
+<a id="verified-review"></a>
+
+## 18. 검증 근거·ADR 재검토와 캐시 범위 정리
+
+사용자 요청으로 assignment.md, 실제 코드·테스트 소스·현재 XML·측정 JSON·ADR을 대조했다. 이번 변경은 문서 정리이며 Java 코드·DB·측정 원본은 바꾸지 않았다. 새 성능 측정이나 테스트 실행을 했다고 기록하지 않는다.
+
+### 범위 확인
+
+assignment Implementation Quest 1~2는 측정 대상을 브랜드 필터+price_asc 첫 페이지 하나로 지정하고, Quest 3은 공통 조회 한 경로의 Redis cache-aside를 요구한다. 다른 정렬의 기존 결과·오류 계약은 유지해야 하지만 최신순·좋아요순까지 모두 최적화하거나 새 인덱스를 추가하는 것이 캐시의 선행 조건은 아니다. 앞선 리뷰에서 다른 정렬 최적화를 우선 추천한 것은 추가 범위였으며 현재 작업의 필수 후속으로 두지 않는다.
+
+현재 범위는 브랜드 7·가격순·page=0·size=20이다. 상품 DB 정렬·페이지, 카운터 조회, 브랜드 재사용을 유지하고 다음에는 공통 조회 한 경로의 캐시 범위·정합성 정책을 설계하는 것을 권고한다. JOIN·다른 정렬·새 카운터·추가 캐시 계층을 필수 단계로 늘리지 않는다.
+
+상품 정보와 좋아요의 분리, 주기 갱신 인기순, 무효화 횟수 감소는 추가 설계 후보로 분류했다. 이 시점의 likes_desc는 현재 누적 좋아요 수로 정렬하며 순위 지연을 허용하는 정책을 채택하지 않았다. 주간 인기·최근 시간대 순위는 별도 정의가 필요하다.
+
+### 확인한 사실과 정정
+
+- 최신 측정 원본 100k-brand-dedup-api.json의 두 DB 모두 업무 SELECT 4개이며 카운터 쿼리의 실제 읽기 20행이다. 원본은 source_unchanged=true를 기록한다.
+- 현재 테스트 XML은 50 suite·267건, 실패·오류·skip 0이다. LikeCounterIntegrationTest 7건·LikeConcurrencyTest 7건·ArchUnit 성공 항목을 직접 확인했다. 이 결과는 기존 실행의 증거이며 이번 재실행 결과가 아니다.
+- counter-backfill.json의 3개 DB 모두 missing_or_mismatched=0·orphan_counters=0 기록을 확인했다. 현재 DB를 다시 측정한 값으로 표현하지 않는다.
+- ADR/설계/계획/로그에서 “응답 시간이 더 이상 구분되지 않는다”, “집계 방식 HTTP 수십 배 차이가 사라졌다”, “읽기 전체가 상수 비용”, “누적 좋아요가 많으므로 캐시 무효화가 잦다”를 제거했다. 같은 페이지 SQL 비교와 별도 JVM HTTP 비교를 구분하고, 13절 데이터를 1만 건으로 적은 부분을 10만 건으로 정정했다.
+- setup의 서로 다른 시점에 붙인 “현재/최신 DB 상태” 안내를 하나의 최근 검증 구성 안내로 정리했다. 과거 실험·실측은 기록으로 보존한다.
+
+### 도메인·트랜잭션 판단 검토
+
+ADR 0002는 파생 카운터의 정합성 책임을 피하고 관계 COUNT를 사용하는 결정이었다. ADR 0017은 유니크 제약·조건 DELETE로 중복·취소 계약을 지키며 별도 카운터를 쓰지 않는 결정이었다. 이번에는 별도 카운터 저장을 도입했으므로 “문제가 다르기 때문에 기존 결정이 전혀 바뀌지 않았다”는 설명은 충분하지 않다.
+
+ADR 0020을 다시 작성해 0002를 대체하고 0017의 카운터 미사용 부분을 변경한다고 명시했다. 0017에도 후속 링크와 변경된 범위를 반영했다. 외부 최초/중복/취소·삭제 경합 계약은 유지한다. LikeCountModel은 별도 파생 저장 상태이며 상품 재고 aggregate에 좋아요 증감 책임을 추가하지 않았다. 상품/카운터 생성 조정은 ProductFacade, 관계 의미·쓰기 요청은 LikeService, 두 SQL의 원자적 저장은 LikeRepositoryImpl, 응답 조합은 ProductQueryService에 있다. 기존 패키지 의존 방향은 ArchUnit으로 검증된 범위에서 유지한다.
+
+검증표에는 실제 코드 테스트와 실험용 JDBC failpoint를 구분해 적었다. 실제 구현에서 누락/감소 실패 rollback, 외부 TX rollback, 중복·동시 등록/취소, 삭제 후 취소, 상품/카운터 동시 생성·rollback, offline backfill 재실행을 확인했다. 직접 SQL 우회에 의한 양수 불일치 검출, 모든 동시성 interleaving, 카운터 행 timeout의 별도 HTTP 시나리오, 무중단 migration, Redis 장애는 이번 증거로 확인된 범위가 아니다. 테스트가 통과했다는 사실을 이 범위 전체의 보장으로 확대하지 않는다.
+
+### 캐시 다음 단계 — 제안, 아직 미구현
+
+가격순에서 좋아요 값은 순서·페이지 선택에 사용되지 않는다(ProductQueryService의 PRICE_ASC 비교/DB ORDER BY 확인). 따라서 캐시 payload에서 좋아요 값을 분리하고 카운터에서 현재 값을 합성하면, 좋아요 등록/취소가 그 캐시의 내용을 바꾸지 않도록 범위를 설계할 수 있다. 이는 코드 의존성에 따른 설계 후보이며 hit rate·무효화 감소량·지연 개선은 아직 측정하지 않았다. hit에 남는 DB 비용을 포함해 DB-only/miss/hit을 비교해야 한다.
+
+상품 생성·가격/이름 수정·상품/브랜드 삭제는 저장한 필드·순서·페이지에 영향을 줄 수 있어 commit 경계·실패·늦은 채움을 검증해야 한다. 현재 페이지에 없는 상품도 가격이 바뀌어 들어오거나 OFFSET 경계를 바꿀 수 있으므로 “캐시에 없으니 영향 없음”으로 무효화를 생략하지 않는다. 삭제 비노출·소유권·주문 판단은 완화하지 않는다. TTL 하나로 무효화 실패·늦은 재삽입을 모두 해결했다고 하지 않는다.
+
+인기순을 별도 캐시 대상으로 고른다면 DB-only/miss/fallback 비용을 먼저 측정하고, 그 SQL의 계획·읽기량으로 인덱스 후보를 판단한다. 캐시 도입 전에 인기순 인덱스를 반드시 추가해야 한다는 규칙은 없다. 현재 likes_desc의 순서/값 최신성을 바꾸거나 별도 주기 갱신 인기순을 만들 때에는 먼저 정책을 합의해야 한다. 이 리뷰에서 5분 snapshot을 구현하거나 기존 계약을 변경하지 않았다.
+
+이번 문서 리뷰의 권고는 **현재 가격순 범위를 유지한 캐시 설계로 진행**하는 것이다. 캐시가 실제 서비스에 필요한지·어떤 범위가 효율적인지는 아직 미검증이며 과제의 학습 구현 목적과 구분한다. 측정할 항목은 DB-only/miss/hit 결과 일치, 생략된 원본 SQL, hit rate·DB 호출량, 무효화 횟수, 지연 분포, Redis 실패/복구·늦은 채움 결과다.
+
+## 19. plan 체크리스트를 완료 근거에 맞춰 갱신
+
+사용자가 4단계까지 진행했는데 체크가 남아 있다고 지적해 plan의 1~4단계 항목을 실제 코드·작은 픽스처·측정 JSON·기존 check 결과와 대조했다. 미체크 표시는 작업 누락이 아니라 초기 계획의 표시가 갱신되지 않은 것이었다. 현재 브랜드 7 가격순 범위의 완료 항목을 체크하고 각 항목에 근거 링크를 붙였다. 좋아요 집계→카운터 전환, JOIN 실험/미적용, 선택 후속(기존 인덱스 제거·고부하 쓰기 한계)을 구분했다. 5~7단계 캐시 정책·구현·변경/장애/복구는 아직 미완료이며, 캐시 후 최종 회귀·기술 글·제출도 남아 있다. 이번에는 문서만 수정했으며 새 테스트를 실행한 것으로 기록하지 않는다.
+
+<a id="index-reading-review"></a>
+
+## 20. 인덱스 실험을 읽기·정렬·반환 순서로 설명
+
+사용자가 설명이 어렵다고 지적해 design 7·8절, 이 로그 7·8.1절, SQL 09·10의 짧은 확인 목적과 Handler 결과서 요약을 정리했다. 숫자는 기존 price-first-index.json과 index-conditions.json의 EXPLAIN ANALYZE·반환 결과를 직접 대조했다. 가격 우선 scan 실제 1,600행·Filter/Limit 20행, 브랜드 우선 lookup 실제 20행·Limit 20행을 확인했다. 두 브랜드 자동/05 강제 경로는 range scan 실제 198행·Sort·Limit 20행을 확인했다.
+
+이제 “실제 읽은 행 → 추가 정렬 → 반환한 행”으로 설명한다. Sort가 없더라도 읽기량이 다르며, 이번 IN 비교의 Sort를 모든 인덱스에 일반화하지 않는다. 가격 우선+IN은 이 원본에 없는 조합이라 실측 결과로 적지 않았다. 새로운 예시 가격·추정 행 수·성능 배율을 추가하지 않았고 측정 원본·SQL 실행 문장은 바꾸지 않았다. 새 DB 실험이나 테스트 실행이 아닌 기존 원본 대조와 설명 정리다.
+
+<a id="price-cache-without-count"></a>
 <a id="price-cache-basic"></a>
 
 ## 21. 가격순 상품 페이지와 기본 캐시 검증
@@ -739,6 +2034,14 @@ python3 scripts/measure-week4-redis-read-cost.py \
 
 전체 310건은 현재 개인화 구현을 포함한 회귀 검사다. 22~23절은 같은 JAR로 다시 실행했으며 사용자 95의 isLiked를 독립 seed 계산과 매 응답 비교했다. 일반 페이지는 12개 true/8개 false, 쏠림 페이지는 20개 false였다. 다른 개인 관계 분포까지 대표한다고 주장하지 않는다. 헤더 없는 조회는 별도 표로 구분했다. 이전 개인화 전 원본 JSON은 당시 측정으로 남기며 현재 개인화 경로의 수치로 사용하지 않는다. 좋아요 변경과 겹쳐 이미 시작한 트랜잭션까지 최신이라고 주장하지 않는다.
 
+## 27-1. 쿼리 패턴에 따른 인덱스 선정 근거 정리
+
+design 3절에 WHERE·ORDER BY·LIMIT과 인덱스 컬럼의 대응 표, 기존·가격까지만·전체 정렬·가격 우선 후보의 접근 행 수와 Sort 비교를 모았다. 기존 설명은 2~8절에 있었으며 카디널리티의 역할, 두 고정 조건의 순서까지 최적이라고 증명한 것은 아니라는 한계, 실제 호출 빈도 미측정을 명시했다.
+
+9절에는 현재 인덱스별 용도와 남은 판단을 추가했다. 기존 브랜드 인덱스의 ID 정렬 근거, 개인 관계 유니크 인덱스와 카운터 PK의 현재 역할, 과거 집계용 product_id 인덱스의 재검토 필요성을 구분했다. 현재 목록에는 총상품수 COUNT가 없으므로 과거 COUNT 실험을 현재 유지 근거로 사용하지 않는다.
+
+현재 모델·Repository·ADR 0020/0023 및 기존 측정 원본과 대조한 문서 보강이다. 코드·인덱스·정책·성능 원본을 변경하거나 새 측정을 실행하지 않았다. 문서 링크·표와 변경 범위를 확인했으며 테스트·Checkstyle·ArchUnit은 이번 문서 변경에서 재실행하지 않았다.
+
 <a id="likes-cache-basic"></a>
 
 ## 28. 좋아요순 ID 페이지 캐시와 실제 API 비교
@@ -811,6 +2114,12 @@ python3 scripts/compare-week4-likes-cache.py \
   --baseline docs/week4/measurements/100k-likes-cache.json \
   --output docs/week4/measurements/100k-likes-cache-repeat.json
 ```
+
+## 29. 설계 문서의 읽는 순서 정리
+
+design을 조회 계약·측정 방법 → 상품 인덱스 실험과 선택 근거 요약 → 좋아요 카운터 → 현재 조회 흐름 → 가격순 캐시 정책·비교·결론 → 좋아요순 캐시 비교 순으로 재배치했다. 목차와 절 링크를 추가하고 인덱스 실험의 1~8 번호는 유지했다. 비교 전 질문과 완료 결과를 하위 제목으로 구분하고, 실험별 추가·삭제·유지는 당시 기록임을 안내했다. 기존 9~13절의 내용은 해당 주제 제목 아래로 이동했으며 가격순·좋아요순 결론의 명시적 앵커를 유지했다.
+
+기존 설명·정책·수치·결과를 유지하고 절 번호와 이동 안내에 해당하는 본문 5곳만 연결에 맞게 수정했다. 새로 추가된 좋아요순 실험 내용도 포함해 기존 코드 블록 8개와 표 11개가 그대로인지 대조했다. 추가한 표는 탐색용 목차 1개다. 상대 링크·앵커·코드 블록·공백과 측정 JSON 해시를 확인했다. 코드·인덱스·성능 원본 변경이나 새 측정은 없으며 테스트·Checkstyle·ArchUnit은 문서 재배치에서 재실행하지 않았다.
 
 <a id="popular-cache-snapshot"></a>
 
@@ -896,3 +2205,32 @@ Python 스레드 20개를 barrier에서 함께 출발시키고 준비용 3묶음
 
 좋아요마다 DEL하던 방식 대신 순위 지연을 허용해 재사용했다는 점이 이번 선택의 근거다. 모든 요청의 변경 후 60초 절대 상한, 운영 hit rate·최적 TTL·최대 처리량·DB CPU/연결 대기 감소까지 증명한 것은 아니다. 만료 시 중복 원본 조회 비용도 남아 있다. 이후 필요성이 관찰되면 요청 합치기나 갱신 방식을 검토한다. Sorted Set·로컬 추가·배치·revision은 현재 도입하지 않았다.
 
+<a id="final-review-fixes"></a>
+
+## 31. 최종 점검: 첫 페이지 범위 상수화·사용자 확인 순서·브랜드 없는 목록 측정
+
+**첫 페이지 범위 상수화.** 캐시 대상 "첫 페이지 20개"가 `PricePageReader`(채우기 조건), `PricePageInvalidator`(삭제 대상), `ProductQueryService`(인기순 요청 검증), `RedisPopularPageCache`(값 검증·키) 네 곳에 숫자로 따로 있었다. 한 곳만 바뀌면 바뀐 페이지의 캐시가 쓰기 후에도 지워지지 않을 수 있어, `domain.product.CachedFirstPage`(PAGE=0, SIZE=20, `matches`)로 모았다. 인프라가 application을 참조하지 않도록 캐시 포트와 같은 domain 패키지에 두었다. Redis 키 문자열은 이전과 같다.
+
+**사용자 확인 순서.** `ProductListQueryService`가 공통 목록(가격순이면 캐시 채우기 포함)을 먼저 만든 뒤 `X-USER-ID` 사용자를 확인해, 없는 사용자도 목록 조회를 다 한 다음 404가 났다. 사용자 확인을 맨 앞으로 옮겼다. 응답 계약(없는 사용자 404, 헤더 없음은 공개 목록)은 같다. `ProductListQueryServiceTest`의 해당 테스트를 "목록 조회 전에 거절하고 상품 조회를 하지 않는다"로 바꿨다.
+
+전체 `:apps:commerce-api:check` 331건, 실패·오류·skip 0, Checkstyle·ArchUnit 통과.
+
+**브랜드 없는 목록 측정(과제 측정 대상 밖).** 기본 정렬 LATEST는 브랜드가 없으면 활성 상품 전체를 엔티티로 읽고, 전체 ID로 카운터를 조회한 뒤 Java에서 정렬한다. 위 수정 후 JAR로 `loopers_benchmark_100k`(활성 96,990개)에 실제 API를 띄워 순차 측정했다(케이스별 준비 5회·측정 20회, 헤더 없음, 브랜드 없는 경로는 캐시 대상 아님).
+
+| 요청 | 중앙값 | p95 |
+| --- | ---: | ---: |
+| 브랜드 없음·latest(기본 요청) | 573.03ms | 589.70ms |
+| 브랜드 없음·likes_desc | 596.58ms | 636.92ms |
+| 브랜드 없음·price_asc | 127.51ms | 133.52ms |
+| 브랜드 7·latest | 16.42ms | 19.00ms |
+| 브랜드 7·price_asc | 9.96ms | 11.53ms |
+
+같은 DB에서 활성 상품 전체·카운터 전체를 SQL로만 읽는 데는 각각 약 28ms·74ms였다. 기본 요청의 나머지 시간은 약 9.7만 개 엔티티 생성·카운터 IN 조회·Java 정렬에서 생긴 것으로 보지만 구간별로 나눠 재지는 않았다. 브랜드 없는 price_asc는 현재 인덱스가 brand_id로 시작해 정렬 인덱스를 쓰지 못한다. 이번 과제의 측정·개선 대상은 브랜드 필터 경로이므로 코드는 바꾸지 않고 한계로 남긴다. 원본은 로컬 `measurements/100k-brandless-list.json`이며 커밋 대상 묶음에는 넣지 않았다.
+
+**캐시와 주문 금액 검증 추가.** 과제 4단계의 "관리자 가격 수정 후 과거 주문 금액 유지", "캐시에 담긴 브랜드 일괄 삭제 후 다른 브랜드·과거 주문 유지"를 캐시를 켠 상태로 확인하는 테스트가 없어 `PricePageCacheIntegrationTest`에 세 개를 추가했다.
+
+- `adminPriceChangeWithCachedPageKeepsPastOrderAmountAndNewOrderUsesNewPrice`: 캐시를 채운 뒤 관리자 API로 가격을 1000 → 500으로 바꾸면 목록은 500을 보여주고, 그 전에 만든 주문은 단가 1000·합계 2000을 유지하며, 새 주문은 500으로 기록된다.
+- `staleCachedPriceAfterFailedEvictionIsNeverUsedForNewOrders`: 캐시 삭제를 실패시켜 목록에는 옛 가격 1000이 남은 상태에서도 새 주문 단가는 DB 가격 500이다. 주문은 캐시의 표시 가격을 쓰지 않는다는 ADR 0021의 정책을 직접 확인한다.
+- `brandDeletionWithCachedPagesKeepsPastOrdersAndOtherBrandPage`: 두 브랜드의 캐시를 채운 뒤 한 브랜드를 지우면 그 키는 지워지고, 다른 브랜드 페이지는 그대로이며, 지워진 브랜드 상품의 과거 주문 단가·상품명은 유지된다.
+
+전체 `:apps:commerce-api:check` 334건, 실패·오류·skip 0, Checkstyle·ArchUnit 통과.
