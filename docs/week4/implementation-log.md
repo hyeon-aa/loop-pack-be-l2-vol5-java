@@ -306,6 +306,50 @@ Java 21·Docker Testcontainers 연결에서 `:apps:commerce-api:check -Pversion=
 
 코드의 가격순 조회·COUNT·묶음 집계와 두 모델의 인덱스 선언을 실제 API SQL·benchmark 인덱스와 대조했다. 기존 API 계약과 주문·재고 판단을 유지하며 캐시를 추가하지 않았다. 최종 선택·측정 조건·한계·후속 검토를 design·plan·setup에 갱신했다. 커밋·push는 하지 않았다. 사용자는 11·12와 새 13 SQL을 직접 확인한 뒤 추가 질문을 이어갈 수 있다.
 
+## 10. 실제 API의 별도 집계와 페이지 선행 JOIN 후보
+
+`scripts/experiments/join-api.init.gradle`로 실험 Java 소스만 opt-in하여 같은 상품 Controller가 실험 전용 ProductQueryService를 받도록 했다. AtomicBoolean으로 HTTP 요청 전에 경로만 전환한다. 별도 집계는 실제 기존 서비스로 위임하고 JOIN은 읽기 전용 같은 JPA 트랜잭션 안에서 JdbcTemplate으로 실행한다. 일반 소스셋·운영 코드에는 후보를 넣지 않았다. [실험 테스트](../../scripts/experiments/java/com/loopers/experiment/ProductJoinApiExperimentTest.java), [SQL](../../scripts/sql/week4-14-page-first-join.sql), [측정 원본 · join-api-final.json](measurements/index-results.json).
+
+| 실제 HTTP 비교   |     기존 별도 집계 | JOIN 후보 |
+| ---------------- | -----------------: | --------: |
+| 중앙값           |            16.35ms |   10.60ms |
+| 평균             |            18.36ms |   10.76ms |
+| p95              |            25.17ms |   12.06ms |
+| 실제 업무 SELECT |                  5 |         3 |
+| 고정 응답        | seed 기대값과 일치 |      동일 |
+
+동일 서버·같은 persistent Java HttpClient에서 실행 순서를 교대했다. 방식별 준비 10회·측정 30회, 80개 고정 요청의 모든 응답 필드를 독립 seed 기대값과 확인했다. 추가 10개 입력×두 경로에서 다음 페이지·빈 페이지·브랜드 없는 조회·삭제/없는 브랜드·잘못된 page/size·큰 offset·latest·likes_desc의 상태 코드와 전체 JSON이 같았다. 오류 계약을 별도 새 구현으로 복제하지 않고 기존 경로에 위임했다.
+
+시간 측정 뒤 general log에서 경로별 실제 SQL을 별도로 수집하고 EXPLAIN ANALYZE했다. 같은 앱 연결의 split 5개·join 3개 SELECT를 확인했다. 로그 설정은 원래 상태로 복원했다. JOIN은 브랜드 확인과 COUNT를 별도로 유지하고 상품·브랜드·좋아요를 하나의 JDBC 쿼리로 받았다. 고정 페이지는 실제 상품 20행·좋아요 lookup 평균 12.4×20회, LEFT JOIN 250행→임시 집계 20행→Sort 20행이었다. 상품 후보 Sort는 없었고 JOIN 후 Sort는 남았다.
+
+첫 실행은 테스트 픽스처가 시스템 속성으로 DB 주소를 Testcontainer의 빈 DB로 바꿔 validate에서 brand 테이블 누락으로 실패했다. 측정용 주소를 실험 @SpringBootTest 속성에 명시한 재실행만 성공 기록에 포함했다. 재실행에서 HTTP 실험 1건과 자동 포함 ArchUnit 1건, 총 2건 통과(실패·오류·skip 0), 실험 소스 포함 Checkstyle test 통과. 실험 서버는 테스트 종료 시 정리됐다.
+
+현재 실험에서는 JDBC 투영으로 상품의 재고·updated_at 등 응답에 쓰지 않는 엔티티 컬럼도 덜 가져오고 브랜드 조회도 통합했다. 따라서 순수 JOIN 연산 하나의 효과로 시간 차이 전부를 해석하지 않는다. 기존 urllib 측정과 연결·클라이언트 방식이 달라 이번 두 경로 사이에서만 비교한다. 로컬 30표본·동시 요청 1개이며 실제 운영 지연·다른 분포·고부하·쓰기 경쟁은 미검증이다.
+
+현재 조건에서 JOIN은 실제 API 비용을 줄인 유력 후보다. 하지만 실험용 서비스는 연구용 대체 구현이므로 그대로 운영에 채택하지 않는다. 사용자와 이 결과를 검토한 뒤 조회 포트·투영과 회귀를 갖춘 실제 적용을 별도 진행한다. 운영 코드는 별도 집계를 유지하고 캐시는 보류한다.
+
+실험 init script를 제외한 일반 빌드에서 상품·좋아요·LayeredArchitectureTest 50건 통과(실패·오류·skip 0), Checkstyle main/test 통과를 확인했다. 일반 실행 결과에는 실험 테스트가 포함되지 않았음을 XML 목록으로 확인했다. 관련 검사 후 추가 코드 변경은 없다.
+
+## 11. Handler 증거 전체 정리와 누락 측정 보완
+
+기존 JSON의 handler_delta를 직접 읽어 현재 SQL 흐름 01~13의 34개 경로를 결과서에 정리했다. 각 행은 해당 원본 링크를 포함한다. first·key·next·rnd_next를 함께 보이고 last·prev·rnd 차분이 모든 경로에서 0임도 확인했다. 시간 차이가 작을 때 주요 근거는 같은 쿼리의 읽기 감소이며, 다른 구조 쿼리의 카운터를 하나의 상품 수나 절대 성능 순위로 해석하지 않는다.
+
+기존 실제 API JOIN 원본에는 SQL·계획·시간은 있었지만 Handler가 없었다. scripts/measure-week4-handler-supplement.py로 IN 05 강제·상품 페이지+좋아요 별도 집계·상품/브랜드/좋아요 JOIN·split 업무 SELECT 전체·join 업무 SELECT 전체를 보완 측정했다. [원본 · handler-supplement.json](measurements/index-results.json).
+
+| 추가 측정 블록                         | key 증가 | next 증가 | rnd_next 증가 |
+| -------------------------------------- | -------: | --------: | ------------: |
+| IN·05 강제                             |        2 |       198 |             0 |
+| 실제 SQL의 상품 페이지+좋아요 2 SELECT |       22 |       267 |             0 |
+| 상품·브랜드·좋아요 JOIN 1 SELECT       |      272 |       267 |            42 |
+| split 업무 SELECT 5개 재실행           |       26 |       366 |             0 |
+| join 업무 SELECT 3개 재실행            |      275 |       366 |            42 |
+
+각 블록은 같은 읽기 전용 트랜잭션 안에서 일반 SELECT 전후 SHOW SESSION STATUS 차이를 구했다. 독립 연결에서 3회씩 실행해 총 15개 블록의 차분·반환 행 일치를 확인했다. IN은 기존 독립 기대값과, JOIN의 모든 상품·브랜드·좋아요 값은 HTTP 실험의 독립 seed 기대값과 대조했다. 실제 데이터·인덱스 전후 유지도 확인했다. EXPLAIN ANALYZE는 Handler 구간 밖에서 실행했다.
+
+API 전체 값은 실제 API에서 수집한 업무 SQL을 클라이언트로 재실행한 범위다. HTTP 연결의 모든 세션·드라이버 SQL을 포착한 값이라고 기록하지 않는다. JOIN은 next가 같고 임시 집계·테이블 읽기 때문에 key·rnd_next가 더 많았다. 이는 SQL 내부 작업량과 API 왕복 감소가 별개임을 보여준다. 앞선 HTTP 결과만으로 Handler가 줄었다고 추정하지 않았다.
+
+프로젝트 코드·인덱스·실제 데이터를 변경하지 않은 읽기 검증과 문서 작업이다. 추가 기능 회귀는 필요 없어 재실행하지 않았고 Python 검증 assertion과 3회 실측으로 결과를 확인했다. JOIN 채택은 이번 작업에서 확정하지 않았다.
+
 ## 17. 브랜드 중복 조회 제거
 
 `ProductQueryService.getList()`가 `brandService.get(brandId)`로 브랜드를 확인한 뒤, `enrich()` 안에서 `brandService.getAllActiveByIds(...)`로 같은 브랜드를 다시 조회하고 있었다. 9절에서 이미 업무 SELECT 5개를 나열했지만("브랜드 확인·COUNT·상품 페이지·브랜드 정보·좋아요 집계") 그중 "브랜드 확인"과 "브랜드 정보"가 중복이라는 점은 그때 짚지 않았다.
