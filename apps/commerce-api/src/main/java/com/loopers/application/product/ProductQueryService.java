@@ -1,6 +1,7 @@
 package com.loopers.application.product;
 
 import com.loopers.application.brand.BrandInfo;
+import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.like.LikeService;
 import com.loopers.domain.product.ProductModel;
@@ -42,16 +43,15 @@ public class ProductQueryService {
         ProductSort sort
     ) {
         validatePage(page, size);
-        if (brandId != null) {
-            brandService.get(brandId);
-        }
-        List<CustomerProductInfo> products = enrich(productService.findAllActive()).stream()
-            .filter(product -> brandId == null || product.brand().id().equals(brandId))
-            .sorted(comparator(sort))
-            .toList();
+        BrandModel brand = brandId == null ? null : brandService.get(brandId);
+        List<ProductModel> candidates = brandId == null
+            ? productService.findAllActive()
+            : productService.findActiveByBrandId(brandId);
+        List<CustomerProductInfo> products = enrich(candidates, brand).stream().sorted(comparator(sort)).toList();
         int fromIndex = Math.min(page * size, products.size());
         int toIndex = Math.min(fromIndex + size, products.size());
-        return new ProductPage<>(products.subList(fromIndex, toIndex), page, size);
+        var selected = products.subList(fromIndex, toIndex);
+        return new ProductPage<>(selected, page, size);
     }
 
     @Transactional(readOnly = true)
@@ -62,12 +62,22 @@ public class ProductQueryService {
     }
 
     private List<CustomerProductInfo> enrich(Collection<ProductModel> products) {
+        return enrich(products, null);
+    }
+
+    /**
+     * knownBrand가 있으면 호출자가 이미 조회·검증한 브랜드이므로 다시 조회하지 않는다.
+     * 후보 상품은 모두 knownBrand 소속이어야 한다(브랜드 조건으로 조회한 candidates만 넘긴다).
+     */
+    private List<CustomerProductInfo> enrich(Collection<ProductModel> products, BrandModel knownBrand) {
         List<Long> productIds = products.stream().map(ProductModel::getId).toList();
-        Map<Long, BrandInfo> brands = brandService.getAllActiveByIds(
-                products.stream().map(ProductModel::getBrandId).collect(Collectors.toSet())
-            ).stream()
-            .map(BrandInfo::from)
-            .collect(Collectors.toMap(BrandInfo::id, Function.identity()));
+        Map<Long, BrandInfo> brands = knownBrand != null
+            ? Map.of(knownBrand.getId(), BrandInfo.from(knownBrand))
+            : brandService.getAllActiveByIds(
+                    products.stream().map(ProductModel::getBrandId).collect(Collectors.toSet())
+                ).stream()
+                .map(BrandInfo::from)
+                .collect(Collectors.toMap(BrandInfo::id, Function.identity()));
         Map<Long, Long> likeCounts = likeService.countByProductIds(productIds);
         return products.stream()
             .map(product -> new CustomerProductInfo(
