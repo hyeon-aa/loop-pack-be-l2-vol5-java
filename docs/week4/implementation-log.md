@@ -350,6 +350,97 @@ API 전체 값은 실제 API에서 수집한 업무 SQL을 클라이언트로 �
 
 프로젝트 코드·인덱스·실제 데이터를 변경하지 않은 읽기 검증과 문서 작업이다. 추가 기능 회귀는 필요 없어 재실행하지 않았고 Python 검증 assertion과 3회 실측으로 결과를 확인했다. JOIN 채택은 이번 작업에서 확정하지 않았다.
 
+## 12. 10만 건 스케일 재현과 데이터 쏠림 측정 기록
+
+`loopers_benchmark_100k`를 `mysql-benchmark` 컨테이너(포트 3307)에 새 DB로 만들고, `loopers_benchmark`의 `brand`·`product`·`product_like`·`users` 스키마를 복제했다. [seed-week4-100k.py](../../scripts/seed-week4-100k.py) 실행 결과: 상품 100,000(비삭제 96,990)·브랜드 100·유저 200·좋아요 628,186. `--verify-only`로 재확인 가능.
+
+복제 과정에서 `idx_product_price_first`가 원본 `loopers_benchmark`에 여전히 남아 있는 걸 발견했다(9절의 05 채택 당시 "비교 후 삭제했다"던 후보). design.md·7절 기록과 실제 DB가 어긋나 있었다 — Java 엔티티에 이 인덱스 선언이 없어 JPA가 재생성한 것은 아니었고, 삭제 SQL이 실제로 실행되지 않은 상태로 남아 있었던 것으로 보인다. `loopers_benchmark`·`loopers_benchmark_100k` 양쪽에서 `DROP INDEX idx_product_price_first ON product;`로 제거하고 `docs/week4/setup.md`의 어긋난 서술도 정정했다.
+
+[week4-15-100k-scale-check.sql] 결과: `EXPLAIN`(통계 갱신 전/후 모두) `key=idx_product_brand_price`, `rows=990`, `Extra=Using index condition`. Handler `read_key` +1, `read_next` +19 — 1만 건 기록(`rows=99`, `+1`/`+19`)과 `next` 증가분이 같다.
+
+[week4-16-100k-like-join-check.sql] 결과: `EXPLAIN`은 `Covering index range scan on product_like using idx_product_like_product` 유지. Handler 측정 시 앞선 `COUNT(*)` 등 쿼리가 세션 카운터를 이미 올려둬 절대값이 커 보이므로 전/후 차분만 사용 — `read_key` +20, `read_next` +93으로 IN 목록 20개 분량만 읽었다(전체 628,186개 스캔이 아님).
+
+[week4-17-100k-hotspot.sql] 결과: `loopers_benchmark_100k`를 복제한 `loopers_benchmark_100k_hotspot`에 [seed-week4-100k-hotspot.py](../../scripts/seed-week4-100k-hotspot.py)로 신규 유저 50,000명(id 201~50200)을 추가하고 상품 97407(브랜드 7·가격 6000·1페이지 1번째)에만 전원 좋아요를 달았다. 검증: 유저 50,200명·상품 97407 좋아요 50,002개·`product_like` 총 678,186행.
+
+| 비교                                                   | 핫스팟 페이지(97407 포함)                   | 일반 페이지(97407 미포함) |
+| ------------------------------------------------------ | ------------------------------------------- | ------------------------- |
+| `EXPLAIN` 계획                                         | `idx_product_like_product` 커버링 범위 스캔 | 동일                      |
+| 실제 rows(Filter·스캔 단계)                            | 50,093                                      | 255                       |
+| `EXPLAIN ANALYZE` 전체 시간(최상위 `actual time` 끝값) | 15.4ms                                      | 0.243ms                   |
+| `SHOW PROFILES` Duration(연속 2회)                     | 8.58ms·8.65ms                               | 0.29ms·0.40ms             |
+| Handler `read_next` 증가분                             | +50,093                                     | +255                      |
+
+처음에는 `docker compose exec`를 매번 새로 띄워 쿼리 시간을 재다가, 접속 오버헤드(100ms대)가 쿼리 자체보다 커서 폐기했다. 하나의 연결 안에서 `SET profiling = 1;` 후 반복 실행하고 `SHOW PROFILES;`로 재는 방식으로 바꿨다. 각 조건 2~3회의 작은 로컬 표본이며, 운영 동시 부하·네트워크 왕복은 포함하지 않는다.
+
+이 작업은 benchmark 전용 DB(`loopers_benchmark_100k`, `loopers_benchmark_100k_hotspot`)에 대한 조회 검증이다. commerce-api 운영 코드·DB 설정과 실제 1만 건 benchmark 데이터는 변경하지 않았다.
+
+## 13. 10만 건 추가 전후·동일 페이지 쏠림·쓰기·실제 API 검증
+
+[실행기](../../scripts/compare-week4-100k.py), [SQL·시간·Handler·계획·쓰기 표본 원본 · 100k-read-write-skew.json](measurements/index-results.json), [API 실행기](../../scripts/measure-week4-100k-api.py), [API 원본 · 100k-final-api.json](measurements/index-results.json).
+
+### 비교 조건과 정확성
+
+1만 건에서 비교한 모든 후보를 반복하지 않고 최종 상품 가격 인덱스·좋아요 product_id 인덱스의 추가 전후만 비교했다. 10만 건 DB에서 CREATE TABLE LIKE + INSERT SELECT로 네 테이블을 복제하고 control에서 해당 추가 인덱스만 제거했다. 기존 브랜드·유니크·PK는 유지했다. 같은 통계 갱신 후 힌트 없는 SQL로 실행 순서를 교대했다. 읽기는 방식별 준비 10회·측정 30회, 단일 클라이언트다. Docker 실행·접속 시간은 제외하고 SHOW PROFILES 서버 시간을 사용했다. EXPLAIN ANALYZE와 Handler는 시간 측정 밖에서 수집했다.
+
+상품 반환 필드·순서를 독립 seed 공식으로 검증했다. 날짜 문자열은 DATE_FORMAT으로 초 단위로 정규화했다. 좋아요 비교 SQL은 결과 순서를 고정하려고 ORDER BY product_id를 명시했다. 실제 API의 원래 SQL은 아래 별도 캡처로 검증했다. 원본과 복제의 행 수뿐 아니라 쓰기 복구 후 모든 컬럼을 NULL-safe 비교했다. 원본 네 테이블의 행 수·ID 합·전체 컬럼 CRC32 XOR과 인덱스 정의도 전후 일치했다. CRC는 보조 변경 탐지이지 충돌 없는 증명은 아니다.
+
+| SQL 비교           | 추가 전 중앙값 | 추가 후 중앙값 | 실제 읽기·정렬                                      |
+| ------------------ | -------------: | -------------: | --------------------------------------------------- |
+| 상품 가격순 20개   |        1.323ms |        0.327ms | 990행·Sort → 20행·Sort 없음                         |
+| 페이지 좋아요 집계 |       60.407ms |        0.379ms | 유니크 인덱스 전체 628,186행 → product_id 범위 93행 |
+
+상품 Handler key/next는 1/990 → 1/19, 좋아요 next는 628,186 → 93이었다. 단순 시간 배율보다 읽기·정렬 변화가 핵심 근거다.
+
+### 같은 페이지의 쏠림 전후
+
+두 DB에서 같은 20개 상품 ID로 비교했다. 기대 결과 차이는 상품 97407의 좋아요 2 → 50,002뿐이다. 일반 페이지와 핫스팟 페이지가 서로 다른 기존 12절 비교를 보완한다.
+
+| 조건                      | 읽은 좋아요 행 | SQL 중앙값 | Handler key/next |
+| ------------------------- | -------------: | ---------: | ---------------- |
+| 일반 10만 건 DB의 1페이지 |             93 |    0.320ms | 20/93            |
+| 핫스팟 DB의 같은 1페이지  |         50,093 |    6.850ms | 20/50,093        |
+
+두 계획 모두 커버링 범위 스캔이다. 범위 탐색은 유지됐지만 집계량이 늘었다. 읽기 쏠림 실험이며 좋아요 쓰기 요청 빈도·동시 경합은 측정하지 않았다.
+
+### 쓰기 비용과 저장 공간
+
+START TRANSACTION + DML + COMMIT 서버 시간 합계다. 가격 수정과 논리 삭제는 여러 상품 ID를 사용하고 각 작업을 별도 commit한 뒤 복구도 별도 commit했다. 등록은 같은 실험용 상품 ID를 재사용한다. 준비 10회·측정 최대 50회 중 원래 삭제된 상품 한 개는 양쪽에서 제외해 상품 작업별 49표본, 좋아요는 50표본이다. 복구·정리 작업 시간도 원본에 따로 보존했다.
+
+| 작업           | 추가 전 중앙값 | 추가 후 중앙값 |
+| -------------- | -------------: | -------------: |
+| 상품 등록      |        1.834ms |        1.874ms |
+| 상품 가격 변경 |        1.228ms |        1.322ms |
+| 상품 논리 삭제 |        1.211ms |        1.170ms |
+| 좋아요 등록    |        1.801ms |        2.066ms |
+| 좋아요 취소    |        1.541ms |        1.432ms |
+
+좋아요 쓰기는 FK 없는 복제 테이블에 seed에 없는 user_id=201과 회차별 상품을 사용한다. 애플리케이션 사용자 검증을 포함한 API 쓰기 실험이 아니다. 같은 관계 반복에 한정됐던 1만 건 실험을 보완하지만 지속 부하·랜덤 쓰기·동시 등록/취소 실험은 아니다. 표본 변동으로 추가 후 오히려 짧은 중앙값도 있어 고정된 악화율이나 쓰기 비용이 없다는 결론을 내리지 않는다.
+
+동일 ANALYZE 후 보조 인덱스 할당량은 상품 5,783,552 → 11,567,104 bytes(차이 5.52MiB), 좋아요 26,820,608 → 42,876,928 bytes(차이 15.31MiB)였다. 유효 데이터 바이트나 순수 인덱스 키 크기가 아닌 테이블의 보조 인덱스 페이지 할당 통계다.
+
+### 최종 인덱스의 실제 API
+
+현재 운영 소스를 bootJar로 빌드하고 일반·핫스팟 DB별 독립 JVM으로 실행했다. 기존 설정 파일은 수정하지 않고 명령행으로 DB 주소와 포트 18082/18083만 지정했으며 ddl-auto=validate를 유지했다. 각 DB에서 누락된 example·orders·order_item·point_balance·point_grant·point_usage의 빈 스키마를 잠시 복제하고 종료 후 빈 상태를 확인해 제거했다. 상품·좋아요 데이터와 인덱스는 변경하지 않았다.
+
+브랜드 7·price_asc·page=0·size=20에서 준비 10회·측정 30회 및 준비 상태/SQL 캡처 요청의 모든 응답을 seed 기대값과 검증했다. 두 분포 모두 totalCount=990이며 상품 20개와 순서가 같고 핫스팟 상품의 좋아요 수만 다르다.
+
+| HTTP                 |   일반 10만 건 | 핫스팟 10만 건 |
+| -------------------- | -------------: | -------------: |
+| 중앙값               |        14.51ms |        22.20ms |
+| p95                  |        17.89ms |        27.10ms |
+| 업무 SELECT          |              5 |              5 |
+| 상품 페이지 읽기     | 20행·Sort 없음 |           동일 |
+| 전체 건수 COUNT 읽기 |          990행 |           동일 |
+| 좋아요 읽기          |           93행 |       50,093행 |
+
+HTTP는 연결·전체 본문 읽기를 포함한 urllib 시간이다. 별도 JVM의 로컬 순차 표본이므로 두 HTTP 시간 차이 전체를 쏠림의 인과 효과로 단정하지 않는다. 같은 연결에서 순서를 교대한 위 SQL 비교와 구분한다. 목표 응답 시간/SLO와 동시 부하가 정해지지 않아 운영 성능 합격으로 판정하지 않는다. SQL 수집은 시간 측정 뒤 general log로 수행했고 기존 로그 설정을 복원했다. JOIN 후보·캐시는 추가하지 않았다.
+
+### 실행·정리·문서 검증
+
+첫 SQL 실험은 datetime 소수초 출력 형식 차이로 기대값 검증에서 중단됐고 복제 테이블은 finally에서 정리됐다. 날짜 출력 형식을 정규화한 성공 실행만 결과에 포함했다. 두 실행기는 기존 결과 덮어쓰기를 거부한다. 실험 후 원본 데이터·인덱스 정의 일치, 임시 테이블 제거, 직접 시작한 API 종료를 확인했다.
+
+bootJar 성공, Checkstyle main/test 성공(UP-TO-DATE), LayeredArchitectureTest 1건 성공(실패·오류·skip 0). 이번에는 운영 Java 코드를 수정하지 않아 전체 기능 회귀를 재실행하지 않았다. seed 기반 SQL·HTTP 검증과 관련 아키텍처 검사를 수행했다. ADR 0002의 관계 집계와 ADR 0016의 삭제 대상 ID·PK 잠금 순서를 대조했고 정책 변경은 없다. design의 비정규화·잦은 무효화에 관한 추정을 미확정 후보로 정정했다. 커밋·push는 하지 않았다.
+
 ## 17. 브랜드 중복 조회 제거
 
 `ProductQueryService.getList()`가 `brandService.get(brandId)`로 브랜드를 확인한 뒤, `enrich()` 안에서 `brandService.getAllActiveByIds(...)`로 같은 브랜드를 다시 조회하고 있었다. 9절에서 이미 업무 SELECT 5개를 나열했지만("브랜드 확인·COUNT·상품 페이지·브랜드 정보·좋아요 집계") 그중 "브랜드 확인"과 "브랜드 정보"가 중복이라는 점은 그때 짚지 않았다.
