@@ -57,7 +57,6 @@ class ProductQueryServiceTest {
             brandService, productService, likeService
         ).getList(null, 0, 1, ProductSort.LIKES_DESC);
 
-        assertThat(result.totalCount()).isEqualTo(2);
         assertThat(result.items()).extracting(CustomerProductInfo::id).containsExactly(2L);
         assertThat(result.items().getFirst().likeCount()).isEqualTo(3L);
     }

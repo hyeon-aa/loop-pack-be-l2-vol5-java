@@ -51,7 +51,7 @@ public class ProductQueryService {
             .toList();
         int fromIndex = Math.min(page * size, products.size());
         int toIndex = Math.min(fromIndex + size, products.size());
-        return new ProductPage<>(products.subList(fromIndex, toIndex), page, size, products.size());
+        return new ProductPage<>(products.subList(fromIndex, toIndex), page, size);
     }
 
     @Transactional(readOnly = true)

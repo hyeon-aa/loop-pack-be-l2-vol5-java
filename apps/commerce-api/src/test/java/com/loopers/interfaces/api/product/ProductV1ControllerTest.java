@@ -62,15 +62,16 @@ class ProductV1ControllerTest {
                     1L, new BrandInfo(2L, "나이키", null), "운동화", 100_000L, 3L, null
                 )),
                 0,
-                20,
-                1
+                20
             )
         );
 
         mockMvc.perform(get("/api/v1/products").param("sort", "likes_desc"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.data.items[0].likeCount").value(3))
-            .andExpect(jsonPath("$.data.totalCount").value(1));
+            .andExpect(jsonPath("$.data.page").value(0))
+            .andExpect(jsonPath("$.data.size").value(20))
+            .andExpect(jsonPath("$.data.totalCount").doesNotExist());
     }
 
     @Test

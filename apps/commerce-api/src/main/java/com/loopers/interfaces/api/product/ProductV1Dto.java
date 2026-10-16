@@ -26,13 +26,12 @@ public class ProductV1Dto {
         }
     }
 
-    public record ProductListResponse(List<ProductResponse> items, int page, int size, long totalCount) {
+    public record ProductListResponse(List<ProductResponse> items, int page, int size) {
         public static ProductListResponse from(ProductPage<CustomerProductInfo> page) {
             return new ProductListResponse(
                 page.items().stream().map(ProductResponse::from).toList(),
                 page.page(),
-                page.size(),
-                page.totalCount()
+                page.size()
             );
         }
     }
