@@ -13,6 +13,8 @@ public interface ProductRepository {
 
     List<ProductModel> findAllActive();
 
+    List<ProductModel> findActiveByPriceAsc(Long brandId, int page, int size);
+
     List<ProductModel> findActiveByBrandId(Long brandId);
 
     List<ProductModel> findActiveByIds(Collection<Long> ids);

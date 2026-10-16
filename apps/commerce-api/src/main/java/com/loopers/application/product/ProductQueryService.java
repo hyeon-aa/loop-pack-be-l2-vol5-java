@@ -44,6 +44,10 @@ public class ProductQueryService {
     ) {
         validatePage(page, size);
         BrandModel brand = brandId == null ? null : brandService.get(brandId);
+        if (sort == ProductSort.PRICE_ASC) {
+            List<ProductModel> candidates = productService.findActiveByPriceAsc(brandId, page, size);
+            return new ProductPage<>(enrich(candidates, brand), page, size);
+        }
         List<ProductModel> candidates = brandId == null
             ? productService.findAllActive()
             : productService.findActiveByBrandId(brandId);

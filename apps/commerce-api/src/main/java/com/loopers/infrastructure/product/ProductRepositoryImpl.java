@@ -4,6 +4,7 @@ import com.loopers.domain.product.ProductModel;
 import com.loopers.domain.product.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+import org.springframework.data.domain.PageRequest;
 
 import java.util.Collection;
 import java.util.List;
@@ -38,6 +39,14 @@ public class ProductRepositoryImpl implements ProductRepository {
     @Override
     public List<ProductModel> findActiveByBrandId(Long brandId) {
         return productJpaRepository.findByBrandIdAndDeletedAtIsNull(brandId);
+    }
+
+    @Override
+    public List<ProductModel> findActiveByPriceAsc(Long brandId, int page, int size) {
+        if ((long) page * size > Integer.MAX_VALUE) {
+            return List.of();
+        }
+        return productJpaRepository.findVisibleByPriceAsc(brandId, PageRequest.of(page, size));
     }
 
     @Override

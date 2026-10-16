@@ -52,6 +52,11 @@ public class ProductService {
     }
 
     @Transactional(readOnly = true)
+    public List<ProductModel> findActiveByPriceAsc(Long brandId, int page, int size) {
+        return productRepository.findActiveByPriceAsc(brandId, page, size);
+    }
+
+    @Transactional(readOnly = true)
     public List<ProductModel> findActiveByIds(Collection<Long> ids) {
         return productRepository.findActiveByIds(ids);
     }

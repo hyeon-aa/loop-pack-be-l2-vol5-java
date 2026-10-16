@@ -51,6 +51,9 @@ class ProductBrandFilterIntegrationTest {
             newer.getId(), sameTimeHigherId.getId());
         em.clear();
 
+        assertThat(products.findActiveByPriceAsc(brand.getId(), 0, 20)).extracting(ProductModel::getId)
+            .containsExactly(sameTimeHigherId.getId(), newer.getId(), older.getId(), expensive.getId());
+
         var first = query.getList(brand.getId(), 0, 2, ProductSort.PRICE_ASC);
         assertThat(first.page()).isZero();
         assertThat(first.size()).isEqualTo(2);
@@ -77,6 +80,23 @@ class ProductBrandFilterIntegrationTest {
         var result = query.getList(null, 0, 20, ProductSort.PRICE_ASC);
         assertThat(result.items()).extracting(CustomerProductInfo::id).containsExactly(visible.getId());
         assertThat(result.items()).hasSize(1);
+    }
+
+    @Test
+    void databasePageExcludesDeletedBrandsBeforeLimit() {
+        product(brand(true), 100, false);
+        ProductModel first = product(brand(false), 200, false);
+        ProductModel second = product(brand(false), 300, false);
+        product(brand(false), 50, true);
+        em.flush();
+        em.clear();
+
+        var page = query.getList(null, 0, 1, ProductSort.PRICE_ASC);
+        assertThat(page.items()).extracting(CustomerProductInfo::id).containsExactly(first.getId());
+        assertThat(page.items()).hasSize(1);
+        assertThat(query.getList(null, 1, 1, ProductSort.PRICE_ASC).items())
+            .extracting(CustomerProductInfo::id).containsExactly(second.getId());
+        assertThat(query.getList(null, Integer.MAX_VALUE, 100, ProductSort.PRICE_ASC).items()).isEmpty();
     }
 
     @Test
