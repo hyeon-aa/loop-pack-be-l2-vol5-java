@@ -142,6 +142,24 @@ benchmark DB의 general log를 잠깐 켜고 실제 편집기의 상품 조회�
 
 사용자 요청으로 SQL 번호를 04 가격까지만 있는 후보 → 05 생성 시각·ID 동점 정렬까지 포함하는 순서로 변경했다. 전체 정렬 인덱스의 Handler 전용 파일도 week4-05-handler-only.sql로 변경하고 문서 링크·실행 명령을 갱신했다. 기존 실행 계획·쿼리는 보존했다. 후보 99개를 끝까지 읽는 next 99에는 이후 98개와 끝 확인 요청이 포함됐고, LIMIT으로 멈추는 next 19와 구분한다. 인덱스·데이터·측정값은 변경하지 않았다.
 
+## 4. id DESC만 제외한 후보 비교
+
+`scripts/compare-week4-price-tie-index.py --without-id`로 idx_product_brand_price_time(brand_id, deleted_at, price, created_at DESC)을 임시 생성했다. 사용자 재적용한 05 전체 정렬 인덱스와 같은 쿼리·컬럼·WHERE·ORDER BY·LIMIT을 비교했다. 각 경로는 FORCE INDEX로 분리했고 두 후보가 있을 때 힌트 없는 선택은 05였다. [측정 원본 · price-without-id-index.json](measurements/index-results.json), [확인 SQL](../../scripts/sql/week4-06-implicit-id.sql).
+
+| 확인                  |  id DESC 미명시 | 05의 id DESC 명시 |
+| --------------------- | --------------: | ----------------: |
+| 실제 접근 rows        |              99 |                20 |
+| Sort                  |            있음 |              없음 |
+| Handler key·next 증가 |            1·99 |              1·19 |
+| 서버 SQL 중앙값       |         0.221ms |           0.137ms |
+| 인덱스 할당 통계      | 25페이지·400KiB |   25페이지·400KiB |
+
+방식별 준비 10회·측정 30회, 총 80회 실행 순서를 교대했다. 모든 반환 컬럼·순서가 seed 기대값과 같았다. Handler 측정도 별도 일반 SELECT의 같은 연결 전후 차이로 확인했다. SQL 시간은 로컬 서버 시간이고 HTTP·쓰기 비용을 포함하지 않는다.
+
+id ASC로 바꾼 보조 조회는 same price/time의 1407 → 4407 → 7407을 반환했고 EXPLAIN에서 Using index·filesort 없음이었다. 이는 기본키 자동 포함으로 ID를 얻을 수 있음을 보여주지만 원래 쿼리의 id DESC 요구가 해결됐다는 뜻은 아니다. 보조 조회의 ORDER BY 변경은 원래 쿼리 성능 비교와 구분한다.
+
+finally에서 이번 임시 후보만 삭제하고 기존 인덱스 이름·열·방향이 유지됐음을 확인했다. 모델·운영 코드·상품 데이터 변경은 없으며 ANALYZE TABLE로 통계는 갱신됐다. 05 전체 정렬 인덱스는 유지한다. SQL 파일은 임시 후보가 이미 삭제된 상태에서 재생성 절차와 관찰 결과를 설명한다.
+
 ## 17. 브랜드 중복 조회 제거
 
 `ProductQueryService.getList()`가 `brandService.get(brandId)`로 브랜드를 확인한 뒤, `enrich()` 안에서 `brandService.getAllActiveByIds(...)`로 같은 브랜드를 다시 조회하고 있었다. 9절에서 이미 업무 SELECT 5개를 나열했지만("브랜드 확인·COUNT·상품 페이지·브랜드 정보·좋아요 집계") 그중 "브랜드 확인"과 "브랜드 정보"가 중복이라는 점은 그때 짚지 않았다.
