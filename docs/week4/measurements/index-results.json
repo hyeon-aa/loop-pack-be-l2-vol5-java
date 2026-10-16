@@ -1,6 +1,6 @@
 {
   "description": "문서에서 참조하는 기존 측정 원본을 묶었다. 각 결과는 해당 실행 시점의 기록이며 새 측정이 아니다.",
-  "source_count": 2,
+  "source_count": 7,
   "results": {
     "baseline.json": {
       "recorded_at": "2026-10-11T16:44:39.529003+09:00",
@@ -436,15 +436,1344 @@
         "previous_log_output": "FILE"
       }
     },
+    "brand-filter-reset.json": {
+      "recorded_at": "2026-10-13T23:13:59.284186+09:00",
+      "database": "8.0.46\tloopers_benchmark\tREPEATABLE-READ",
+      "indexes_before": "product\t0\tPRIMARY\t1\tid\tA\t9844\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL",
+      "stage": "brand",
+      "price_index_excluded": false,
+      "notes": [
+        "Product candidates only; no LIMIT, likes or active-brand filtering; sort stage adds only ORDER BY.",
+        "Price index excluded only when present; current statistics are not historical statistics.",
+        "Handler snapshots surround an ordinary SELECT on the same session; EXPLAIN ANALYZE runs separately.",
+        "Server SELECT durations only, exclude row transfer/client and Java filtering.",
+        "10 warmup + 30 measurements, alternate first strategy; each round uses one read-only transaction.",
+        "Handler requests are not physical page reads or Root/Branch/Leaf visit counts."
+      ],
+      "cases": {
+        "all_active": {
+          "sql": "SELECT p.* FROM product p WHERE p.deleted_at IS NULL",
+          "returned_rows": 9699,
+          "handler_before": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 0,
+            "Handler_read_last": 0,
+            "Handler_read_next": 0,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "handler_after": {
+            "Handler_read_first": 1,
+            "Handler_read_key": 1,
+            "Handler_read_last": 0,
+            "Handler_read_next": 0,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 10001
+          },
+          "handler_delta": {
+            "Handler_read_first": 1,
+            "Handler_read_key": 1,
+            "Handler_read_last": 0,
+            "Handler_read_next": 0,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 10001
+          },
+          "explain": "1\tSIMPLE\tp\tNULL\tALL\tNULL\tNULL\tNULL\tNULL\t9844\t10.00\tUsing where",
+          "explain_analyze": "-> Filter: (p.deleted_at is null)  (cost=1009 rows=984) (actual time=0.0693..3.3 rows=9699 loops=1)\n    -> Table scan on p  (cost=1009 rows=9844) (actual time=0.0681..2.73 rows=10000 loops=1)",
+          "all_sql_ms": [
+            4.63725,
+            4.5184999999999995,
+            4.6985,
+            4.157,
+            4.7947500000000005,
+            4.8645,
+            4.971749999999999,
+            4.7935,
+            4.5504999999999995,
+            4.5785,
+            4.40975,
+            4.08725,
+            4.4615,
+            4.47325,
+            4.442,
+            4.58375,
+            4.549250000000001,
+            4.569,
+            4.12275,
+            4.526,
+            4.95125,
+            4.59375,
+            4.52175,
+            4.496,
+            4.5195,
+            4.6925,
+            4.109,
+            4.638,
+            4.710500000000001,
+            4.36075
+          ],
+          "median_ms": 4.549875,
+          "mean_ms": 4.546075
+        },
+        "brand_7": {
+          "sql": "SELECT p.* FROM product p WHERE p.deleted_at IS NULL AND p.brand_id=7",
+          "returned_rows": 99,
+          "handler_before": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 0,
+            "Handler_read_last": 0,
+            "Handler_read_next": 0,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "handler_after": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 1,
+            "Handler_read_last": 0,
+            "Handler_read_next": 99,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "handler_delta": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 1,
+            "Handler_read_last": 0,
+            "Handler_read_next": 99,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted\tidx_product_brand_deleted\t17\tconst,const\t99\t100.00\tUsing index condition",
+          "explain_analyze": "-> Index lookup on p using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (p.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.0301..0.124 rows=99 loops=1)",
+          "all_sql_ms": [
+            0.41675,
+            0.33725,
+            0.47,
+            0.35875,
+            0.384,
+            0.35024999999999995,
+            0.345,
+            0.33525,
+            0.477,
+            0.337,
+            0.32475,
+            0.34375,
+            0.7717499999999999,
+            0.34675,
+            0.36675,
+            0.37425,
+            0.3125,
+            0.422,
+            0.31725,
+            0.35275,
+            0.324,
+            0.39775,
+            0.3695,
+            0.32949999999999996,
+            0.8562500000000001,
+            0.36075,
+            0.382,
+            0.35175,
+            0.361,
+            0.32925
+          ],
+          "median_ms": 0.35575,
+          "mean_ms": 0.3935166666666667
+        }
+      },
+      "indexes_after": "product\t0\tPRIMARY\t1\tid\tA\t9844\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL",
+      "brand_filtered_fields_equal": true,
+      "validated_executions": 80
+    },
+    "brand-filter.json": {
+      "recorded_at": "2026-10-11T19:17:27.322498+09:00",
+      "url": "http://localhost:8082/api/v1/products?brandId=7&page=0&size=20&sort=price_asc",
+      "host_platform": "macOS-26.5.2-arm64-arm-64bit",
+      "warmup": 10,
+      "samples": 30,
+      "concurrency": 1,
+      "database": "8.0.46\tloopers_benchmark\tREPEATABLE-READ",
+      "indexes": "product\t0\tPRIMARY\t1\tid\tA\t9687\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tPRIMARY\t1\tid\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t1\tuser_id\tA\t182\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t2\tproduct_id\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL",
+      "response": {
+        "items": [
+          {
+            "id": 7407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 07407",
+            "price": 6000,
+            "likeCount": 4
+          },
+          {
+            "id": 4407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 04407",
+            "price": 6000,
+            "likeCount": 150
+          },
+          {
+            "id": 1407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 01407",
+            "price": 6000,
+            "likeCount": 10
+          },
+          {
+            "id": 9407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 09407",
+            "price": 6000,
+            "likeCount": 2
+          },
+          {
+            "id": 6407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 06407",
+            "price": 6000,
+            "likeCount": 5
+          },
+          {
+            "id": 3407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 03407",
+            "price": 6000,
+            "likeCount": 8
+          },
+          {
+            "id": 407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 00407",
+            "price": 6000,
+            "likeCount": 0
+          },
+          {
+            "id": 8407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 08407",
+            "price": 6000,
+            "likeCount": 3
+          },
+          {
+            "id": 5407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 05407",
+            "price": 6000,
+            "likeCount": 6
+          },
+          {
+            "id": 2407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 02407",
+            "price": 6000,
+            "likeCount": 9
+          },
+          {
+            "id": 7707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 07707",
+            "price": 16000,
+            "likeCount": 7
+          },
+          {
+            "id": 4707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 04707",
+            "price": 16000,
+            "likeCount": 10
+          },
+          {
+            "id": 1707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 01707",
+            "price": 16000,
+            "likeCount": 2
+          },
+          {
+            "id": 9707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 09707",
+            "price": 16000,
+            "likeCount": 5
+          },
+          {
+            "id": 6707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 06707",
+            "price": 16000,
+            "likeCount": 8
+          },
+          {
+            "id": 3707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 03707",
+            "price": 16000,
+            "likeCount": 0
+          },
+          {
+            "id": 707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 00707",
+            "price": 16000,
+            "likeCount": 3
+          },
+          {
+            "id": 8707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 08707",
+            "price": 16000,
+            "likeCount": 6
+          },
+          {
+            "id": 5707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 05707",
+            "price": 16000,
+            "likeCount": 9
+          },
+          {
+            "id": 2707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 02707",
+            "price": 16000,
+            "likeCount": 1
+          }
+        ],
+        "page": 0,
+        "size": 20,
+        "totalCount": 99
+      },
+      "response_sha256": "188a6bba7c60810037ce444643417d219018cb4b76dc587b354f435dfd51b6a5",
+      "response_bytes": [
+        2175
+      ],
+      "http_ms": {
+        "mean": 25.15549029988809,
+        "median": 24.19960399993215,
+        "p95": 32.253583999590774,
+        "min": 21.27058299993223,
+        "max": 34.415207999700215
+      },
+      "all_http_ms": [
+        22.516082999572973,
+        21.360292000281333,
+        21.27058299993223,
+        21.682208999664,
+        21.544707999964885,
+        21.611874999507563,
+        22.453874999882828,
+        21.8586660002984,
+        25.96308299962402,
+        24.59187499971449,
+        31.30491699994309,
+        29.812416999448033,
+        23.80733300014981,
+        26.65808400070091,
+        25.550749999638356,
+        28.069500000128755,
+        22.00412500042148,
+        26.825666999684472,
+        21.614207999846258,
+        21.59437499994965,
+        21.748417000708287,
+        34.415207999700215,
+        27.79758300039248,
+        23.370999999315245,
+        26.09912499974598,
+        32.253583999590774,
+        28.55291599917109,
+        27.547458999833907,
+        27.338249999957043,
+        23.44654199987417
+      ],
+      "notes": [
+        "Sequential urllib HTTP calls including connection, full body read; JSON validation excluded from timing",
+        "Warm process/data; no concurrent load; not a throughput or production latency benchmark",
+        "SQL capture and EXPLAIN ANALYZE run separately after HTTP timing; no explicit ANALYZE TABLE",
+        "Business SELECT count excludes transaction/session commands; SQL is captured with actual bound values"
+      ],
+      "sql_probe": {
+        "business_select_count": 4,
+        "queries": [
+          {
+            "sql": "select bm1_0.id,bm1_0.created_at,bm1_0.deleted_at,bm1_0.description,bm1_0.name,bm1_0.updated_at from brand bm1_0 where bm1_0.id=7",
+            "explain_json": {
+              "query_block": {
+                "select_id": 1,
+                "cost_info": {
+                  "query_cost": "1.00"
+                },
+                "table": {
+                  "table_name": "bm1_0",
+                  "access_type": "const",
+                  "possible_keys": [
+                    "PRIMARY"
+                  ],
+                  "key": "PRIMARY",
+                  "used_key_parts": [
+                    "id"
+                  ],
+                  "key_length": "8",
+                  "ref": [
+                    "const"
+                  ],
+                  "rows_examined_per_scan": 1,
+                  "rows_produced_per_join": 1,
+                  "filtered": "100.00",
+                  "cost_info": {
+                    "read_cost": "0.00",
+                    "eval_cost": "0.10",
+                    "prefix_cost": "0.00",
+                    "data_read_per_join": "4K"
+                  },
+                  "used_columns": [
+                    "id",
+                    "created_at",
+                    "deleted_at",
+                    "updated_at",
+                    "description",
+                    "name"
+                  ]
+                }
+              }
+            },
+            "explain_analyze": "-> Rows fetched before execution  (cost=0..0 rows=1) (actual time=42e-6..84e-6 rows=1 loops=1)"
+          },
+          {
+            "sql": "select pm1_0.id,pm1_0.brand_id,pm1_0.created_at,pm1_0.deleted_at,pm1_0.name,pm1_0.price,pm1_0.quantity,pm1_0.updated_at from product pm1_0 where pm1_0.brand_id=7 and pm1_0.deleted_at is null",
+            "explain_json": {
+              "query_block": {
+                "select_id": 1,
+                "cost_info": {
+                  "query_cost": "34.65"
+                },
+                "table": {
+                  "table_name": "pm1_0",
+                  "access_type": "ref",
+                  "possible_keys": [
+                    "idx_product_brand_deleted"
+                  ],
+                  "key": "idx_product_brand_deleted",
+                  "used_key_parts": [
+                    "brand_id",
+                    "deleted_at"
+                  ],
+                  "key_length": "17",
+                  "ref": [
+                    "const",
+                    "const"
+                  ],
+                  "rows_examined_per_scan": 99,
+                  "rows_produced_per_join": 99,
+                  "filtered": "100.00",
+                  "index_condition": "(`loopers_benchmark`.`pm1_0`.`deleted_at` is null)",
+                  "cost_info": {
+                    "read_cost": "24.75",
+                    "eval_cost": "9.90",
+                    "prefix_cost": "34.65",
+                    "data_read_per_join": "44K"
+                  },
+                  "used_columns": [
+                    "id",
+                    "created_at",
+                    "deleted_at",
+                    "updated_at",
+                    "brand_id",
+                    "name",
+                    "price",
+                    "quantity"
+                  ]
+                }
+              }
+            },
+            "explain_analyze": "-> Index lookup on pm1_0 using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (pm1_0.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.0291..0.122 rows=99 loops=1)"
+          },
+          {
+            "sql": "select bm1_0.id,bm1_0.created_at,bm1_0.deleted_at,bm1_0.description,bm1_0.name,bm1_0.updated_at from brand bm1_0 where bm1_0.id in (7) and bm1_0.deleted_at is null",
+            "explain_json": {
+              "query_block": {
+                "select_id": 1,
+                "cost_info": {
+                  "query_cost": "1.00"
+                },
+                "table": {
+                  "table_name": "bm1_0",
+                  "access_type": "const",
+                  "possible_keys": [
+                    "PRIMARY"
+                  ],
+                  "key": "PRIMARY",
+                  "used_key_parts": [
+                    "id"
+                  ],
+                  "key_length": "8",
+                  "ref": [
+                    "const"
+                  ],
+                  "rows_examined_per_scan": 1,
+                  "rows_produced_per_join": 1,
+                  "filtered": "100.00",
+                  "cost_info": {
+                    "read_cost": "0.00",
+                    "eval_cost": "0.10",
+                    "prefix_cost": "0.00",
+                    "data_read_per_join": "4K"
+                  },
+                  "used_columns": [
+                    "id",
+                    "created_at",
+                    "deleted_at",
+                    "updated_at",
+                    "description",
+                    "name"
+                  ]
+                }
+              }
+            },
+            "explain_analyze": "-> Rows fetched before execution  (cost=0..0 rows=1) (actual time=0..42e-6 rows=1 loops=1)"
+          },
+          {
+            "sql": "select lm1_0.product_id,count(lm1_0.id) from product_like lm1_0 where lm1_0.product_id in (7,107,207,307,407,507,607,707,807,907,1007,1107,1207,1307,1407,1507,1607,1707,1807,1907,2007,2107,2207,2307,2407,2507,2607,2707,2807,2907,3107,3207,3307,3407,3507,3607,3707,3807,3907,4007,4107,4207,4307,4407,4507,4607,4707,4807,4907,5007,5107,5207,5307,5407,5507,5607,5707,5807,5907,6007,6107,6207,6307,6407,6507,6607,6707,6807,6907,7007,7107,7207,7307,7407,7507,7607,7707,7807,7907,8007,8107,8207,8307,8407,8507,8607,8707,8807,8907,9007,9107,9207,9307,9407,9507,9607,9707,9807,9907) group by lm1_0.product_id",
+            "explain_json": {
+              "query_block": {
+                "select_id": 1,
+                "cost_info": {
+                  "query_cost": "6562.80"
+                },
+                "grouping_operation": {
+                  "using_temporary_table": true,
+                  "using_filesort": false,
+                  "table": {
+                    "table_name": "lm1_0",
+                    "access_type": "index",
+                    "possible_keys": [
+                      "uk_product_like_user_product"
+                    ],
+                    "key": "uk_product_like_user_product",
+                    "used_key_parts": [
+                      "user_id",
+                      "product_id"
+                    ],
+                    "key_length": "16",
+                    "rows_examined_per_scan": 62738,
+                    "rows_produced_per_join": 31369,
+                    "filtered": "50.00",
+                    "using_index": true,
+                    "cost_info": {
+                      "read_cost": "3425.90",
+                      "eval_cost": "3136.90",
+                      "prefix_cost": "6562.80",
+                      "data_read_per_join": "1M"
+                    },
+                    "used_columns": [
+                      "id",
+                      "product_id"
+                    ],
+                    "attached_condition": "(`loopers_benchmark`.`lm1_0`.`product_id` in (7,107,207,307,407,507,607,707,807,907,1007,1107,1207,1307,1407,1507,1607,1707,1807,1907,2007,2107,2207,2307,2407,2507,2607,2707,2807,2907,3107,3207,3307,3407,3507,3607,3707,3807,3907,4007,4107,4207,4307,4407,4507,4607,4707,4807,4907,5007,5107,5207,5307,5407,5507,5607,5707,5807,5907,6007,6107,6207,6307,6407,6507,6607,6707,6807,6907,7007,7107,7207,7307,7407,7507,7607,7707,7807,7907,8007,8107,8207,8307,8407,8507,8607,8707,8807,8907,9007,9107,9207,9307,9407,9507,9607,9707,9807,9907))"
+                  }
+                }
+              }
+            },
+            "explain_analyze": "-> Table scan on <temporary>  (actual time=12.8..12.9 rows=90 loops=1)\n    -> Aggregate using temporary table  (actual time=12.8..12.8 rows=90 loops=1)\n        -> Filter: (lm1_0.product_id in (7,107,207,307,407,507,607,707,807,907,1007,1107,1207,1307,1407,1507,1607,1707,1807,1907,2007,2107,2207,2307,2407,2507,2607,2707,2807,2907,3107,3207,3307,3407,3507,3607,3707,3807,3907,4007,4107,4207,4307,4407,4507,4607,4707,4807,4907,5007,5107,5207,5307,5407,5507,5607,5707,5807,5907,6007,6107,6207,6307,6407,6507,6607,6707,6807,6907,7007,7107,7207,7307,7407,7507,7607,7707,7807,7907,8007,8107,8207,8307,8407,8507,8607,8707,8807,8907,9007,9107,9207,9307,9407,9507,9607,9707,9807,9907))  (cost=6563 rows=31369) (actual time=0.25..12.7 rows=641 loops=1)\n            -> Covering index scan on lm1_0 using uk_product_like_user_product  (cost=6563 rows=62738) (actual time=0.246..8.38 rows=62756 loops=1)"
+          }
+        ],
+        "previous_general_log": "0",
+        "previous_log_output": "FILE"
+      }
+    },
+    "fixed-page-brand-index.json": {
+      "recorded_at": "2026-10-13T23:46:13.961324+09:00",
+      "sql": "SELECT id,brand_id,name,price,created_at FROM product WHERE brand_id=7 AND deleted_at IS NULL ORDER BY price ASC,created_at DESC,id DESC LIMIT 20",
+      "database": "8.0.46\tloopers_benchmark\tREPEATABLE-READ",
+      "indexes_before": "product\t0\tPRIMARY\t1\tid\tA\t9844\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tPRIMARY\t1\tid\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t1\tuser_id\tA\t166\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t2\tproduct_id\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL",
+      "result_rows": [
+        "7407\t7\tW4 Product 07407\t6000\t2026-01-28 00:00:00.000000",
+        "4407\t7\tW4 Product 04407\t6000\t2026-01-28 00:00:00.000000",
+        "1407\t7\tW4 Product 01407\t6000\t2026-01-28 00:00:00.000000",
+        "9407\t7\tW4 Product 09407\t6000\t2026-01-18 00:00:00.000000",
+        "6407\t7\tW4 Product 06407\t6000\t2026-01-18 00:00:00.000000",
+        "3407\t7\tW4 Product 03407\t6000\t2026-01-18 00:00:00.000000",
+        "407\t7\tW4 Product 00407\t6000\t2026-01-18 00:00:00.000000",
+        "8407\t7\tW4 Product 08407\t6000\t2026-01-08 00:00:00.000000",
+        "5407\t7\tW4 Product 05407\t6000\t2026-01-08 00:00:00.000000",
+        "2407\t7\tW4 Product 02407\t6000\t2026-01-08 00:00:00.000000",
+        "7707\t7\tW4 Product 07707\t16000\t2026-01-28 00:00:00.000000",
+        "4707\t7\tW4 Product 04707\t16000\t2026-01-28 00:00:00.000000",
+        "1707\t7\tW4 Product 01707\t16000\t2026-01-28 00:00:00.000000",
+        "9707\t7\tW4 Product 09707\t16000\t2026-01-18 00:00:00.000000",
+        "6707\t7\tW4 Product 06707\t16000\t2026-01-18 00:00:00.000000",
+        "3707\t7\tW4 Product 03707\t16000\t2026-01-18 00:00:00.000000",
+        "707\t7\tW4 Product 00707\t16000\t2026-01-18 00:00:00.000000",
+        "8707\t7\tW4 Product 08707\t16000\t2026-01-08 00:00:00.000000",
+        "5707\t7\tW4 Product 05707\t16000\t2026-01-08 00:00:00.000000",
+        "2707\t7\tW4 Product 02707\t16000\t2026-01-08 00:00:00.000000"
+      ],
+      "handler_before": {
+        "Handler_read_first": 0,
+        "Handler_read_key": 0,
+        "Handler_read_last": 0,
+        "Handler_read_next": 0,
+        "Handler_read_prev": 0,
+        "Handler_read_rnd": 0,
+        "Handler_read_rnd_next": 0
+      },
+      "handler_after": {
+        "Handler_read_first": 0,
+        "Handler_read_key": 1,
+        "Handler_read_last": 0,
+        "Handler_read_next": 99,
+        "Handler_read_prev": 0,
+        "Handler_read_rnd": 0,
+        "Handler_read_rnd_next": 0
+      },
+      "handler_delta": {
+        "Handler_read_first": 0,
+        "Handler_read_key": 1,
+        "Handler_read_last": 0,
+        "Handler_read_next": 99,
+        "Handler_read_prev": 0,
+        "Handler_read_rnd": 0,
+        "Handler_read_rnd_next": 0
+      },
+      "explain": "1\tSIMPLE\tproduct\tNULL\tref\tidx_product_brand_deleted\tidx_product_brand_deleted\t17\tconst,const\t99\t100.00\tUsing index condition; Using filesort",
+      "explain_analyze": "-> Limit: 20 row(s)  (cost=34.6 rows=20) (actual time=0.141..0.142 rows=20 loops=1)\n    -> Sort: product.price, product.created_at DESC, product.id DESC, limit input to 20 row(s) per chunk  (cost=34.6 rows=99) (actual time=0.14..0.141 rows=20 loops=1)\n        -> Index lookup on product using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (product.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.0274..0.105 rows=99 loops=1)",
+      "brand_index_order_example": "7\tNULL\t7\t26000\n7\tNULL\t107\t96000\n7\tNULL\t207\t66000\n7\tNULL\t307\t36000\n7\tNULL\t407\t6000\n7\tNULL\t507\t76000\n7\tNULL\t607\t46000\n7\tNULL\t707\t16000\n7\tNULL\t807\t86000\n7\tNULL\t907\t56000",
+      "timing": {
+        "median_ms": 0.170125,
+        "mean_ms": 0.16876666666666668,
+        "min_ms": 0.13275,
+        "max_ms": 0.21425
+      },
+      "all_sql_ms": [
+        0.1725,
+        0.1785,
+        0.199,
+        0.17325000000000002,
+        0.145,
+        0.17725,
+        0.17375,
+        0.17,
+        0.14750000000000002,
+        0.15,
+        0.13275,
+        0.149,
+        0.15125,
+        0.186,
+        0.17024999999999998,
+        0.16975,
+        0.15675,
+        0.18000000000000002,
+        0.207,
+        0.152,
+        0.156,
+        0.17975,
+        0.17575,
+        0.195,
+        0.14825,
+        0.164,
+        0.14375,
+        0.21425,
+        0.15075,
+        0.194
+      ],
+      "validated_executions": 41,
+      "notes": [
+        "Fixed query; no schema/data/statistics change.",
+        "FORCE INDEX is only for the illustrative index-key-order query; measurement query has no hint.",
+        "Handler around a separate ordinary SELECT on the same session; ANALYZE runs separately.",
+        "10 warmup + 30 server SQL duration samples; excludes API/network/client timings.",
+        "Key-order example does not inspect physical pages or determine tree height."
+      ],
+      "indexes_after": "product\t0\tPRIMARY\t1\tid\tA\t9844\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tPRIMARY\t1\tid\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t1\tuser_id\tA\t166\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t2\tproduct_id\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL"
+    },
     "index-reset.json": {
       "before_indexes": "product\t0\tPRIMARY\t1\tid\tA\t10098\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t3\tprice\tA\t1101\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t4\tcreated_at\tD\t3101\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_price\t5\tid\tD\t10000\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tPRIMARY\t1\tid\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t1\tuser_id\tA\t182\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t2\tproduct_id\tA\t58949\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t1\tidx_product_like_product\t1\tproduct_id\tA\t8849\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL",
       "before_counts": "10000\n62756",
       "after_indexes": "product\t0\tPRIMARY\t1\tid\tA\t9844\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tPRIMARY\t1\tid\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t1\tuser_id\tA\t166\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t2\tproduct_id\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL",
       "after_counts": "10000\n62756"
+    },
+    "price-sort-reset.json": {
+      "recorded_at": "2026-10-13T23:27:20.213952+09:00",
+      "database": "8.0.46\tloopers_benchmark\tREPEATABLE-READ",
+      "indexes_before": "product\t0\tPRIMARY\t1\tid\tA\t9844\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL",
+      "stage": "sort",
+      "price_index_excluded": false,
+      "notes": [
+        "Product candidates only; no LIMIT, likes or active-brand filtering; sort stage adds only ORDER BY.",
+        "Price index excluded only when present; current statistics are not historical statistics.",
+        "Handler snapshots surround an ordinary SELECT on the same session; EXPLAIN ANALYZE runs separately.",
+        "Server SELECT durations only, exclude row transfer/client and Java filtering.",
+        "10 warmup + 30 measurements, alternate first strategy; each round uses one read-only transaction.",
+        "Handler requests are not physical page reads or Root/Branch/Leaf visit counts."
+      ],
+      "cases": {
+        "brand_7": {
+          "sql": "SELECT p.* FROM product p WHERE p.deleted_at IS NULL AND p.brand_id=7",
+          "returned_rows": 99,
+          "handler_before": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 0,
+            "Handler_read_last": 0,
+            "Handler_read_next": 0,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "handler_after": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 1,
+            "Handler_read_last": 0,
+            "Handler_read_next": 99,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "handler_delta": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 1,
+            "Handler_read_last": 0,
+            "Handler_read_next": 99,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted\tidx_product_brand_deleted\t17\tconst,const\t99\t100.00\tUsing index condition",
+          "explain_analyze": "-> Index lookup on p using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (p.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.0304..0.124 rows=99 loops=1)",
+          "all_sql_ms": [
+            0.35525,
+            0.20975,
+            0.34600000000000003,
+            0.28375,
+            0.35775,
+            0.287,
+            0.35575,
+            0.29474999999999996,
+            0.3665,
+            0.22024999999999997,
+            0.3495,
+            0.18375,
+            0.35975,
+            0.3435,
+            0.31325,
+            0.206,
+            0.434,
+            0.39875,
+            0.458,
+            0.352,
+            0.379,
+            0.25625000000000003,
+            0.36075,
+            0.23725,
+            0.33175,
+            0.21025,
+            0.39399999999999996,
+            0.31275,
+            0.35675,
+            0.31074999999999997
+          ],
+          "median_ms": 0.34475,
+          "mean_ms": 0.32082499999999997
+        },
+        "brand_7_sorted": {
+          "sql": "SELECT p.* FROM product p WHERE p.deleted_at IS NULL AND p.brand_id=7 ORDER BY p.price ASC,p.created_at DESC,p.id DESC",
+          "returned_rows": 99,
+          "handler_before": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 0,
+            "Handler_read_last": 0,
+            "Handler_read_next": 0,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "handler_after": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 1,
+            "Handler_read_last": 0,
+            "Handler_read_next": 99,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "handler_delta": {
+            "Handler_read_first": 0,
+            "Handler_read_key": 1,
+            "Handler_read_last": 0,
+            "Handler_read_next": 99,
+            "Handler_read_prev": 0,
+            "Handler_read_rnd": 0,
+            "Handler_read_rnd_next": 0
+          },
+          "explain": "1\tSIMPLE\tp\tNULL\tref\tidx_product_brand_deleted\tidx_product_brand_deleted\t17\tconst,const\t99\t100.00\tUsing index condition; Using filesort",
+          "explain_analyze": "-> Sort: p.price, p.created_at DESC, p.id DESC  (cost=34.6 rows=99) (actual time=0.164..0.17 rows=99 loops=1)\n    -> Index lookup on p using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (p.deleted_at is null)  (cost=34.6 rows=99) (actual time=0.0338..0.132 rows=99 loops=1)",
+          "all_sql_ms": [
+            0.34900000000000003,
+            0.38475,
+            0.42250000000000004,
+            0.39599999999999996,
+            0.24475000000000002,
+            0.43025,
+            0.39475000000000005,
+            0.36824999999999997,
+            0.2705,
+            0.47125,
+            0.256,
+            0.40525,
+            0.34625,
+            0.38975000000000004,
+            0.24649999999999997,
+            0.3805,
+            0.3185,
+            0.39849999999999997,
+            0.3025,
+            0.3755,
+            0.3275,
+            0.494,
+            0.33325,
+            0.416,
+            0.26925,
+            0.38225,
+            0.2875,
+            0.55475,
+            0.22249999999999998,
+            0.42225
+          ],
+          "median_ms": 0.378,
+          "mean_ms": 0.36201666666666665
+        }
+      },
+      "indexes_after": "product\t0\tPRIMARY\t1\tid\tA\t9844\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL",
+      "brand_filtered_fields_equal": true,
+      "validated_executions": 80
+    },
+    "price-sort.json": {
+      "recorded_at": "2026-10-12T21:43:27.829267+09:00",
+      "url": "http://localhost:8082/api/v1/products?brandId=7&page=0&size=20&sort=price_asc",
+      "host_platform": "macOS-26.5.2-arm64-arm-64bit",
+      "warmup": 10,
+      "samples": 30,
+      "concurrency": 1,
+      "database": "8.0.46\tloopers_benchmark\tREPEATABLE-READ",
+      "indexes": "product\t0\tPRIMARY\t1\tid\tA\t9687\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t1\tbrand_id\tA\t100\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct\t1\tidx_product_brand_deleted\t2\tdeleted_at\tA\t198\tNULL\tNULL\tYES\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tPRIMARY\t1\tid\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t1\tuser_id\tA\t182\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL\nproduct_like\t0\tuk_product_like_user_product\t2\tproduct_id\tA\t62738\tNULL\tNULL\t\tBTREE\t\t\tYES\tNULL",
+      "response": {
+        "items": [
+          {
+            "id": 7407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 07407",
+            "price": 6000,
+            "likeCount": 4
+          },
+          {
+            "id": 4407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 04407",
+            "price": 6000,
+            "likeCount": 150
+          },
+          {
+            "id": 1407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 01407",
+            "price": 6000,
+            "likeCount": 10
+          },
+          {
+            "id": 9407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 09407",
+            "price": 6000,
+            "likeCount": 2
+          },
+          {
+            "id": 6407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 06407",
+            "price": 6000,
+            "likeCount": 5
+          },
+          {
+            "id": 3407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 03407",
+            "price": 6000,
+            "likeCount": 8
+          },
+          {
+            "id": 407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 00407",
+            "price": 6000,
+            "likeCount": 0
+          },
+          {
+            "id": 8407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 08407",
+            "price": 6000,
+            "likeCount": 3
+          },
+          {
+            "id": 5407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 05407",
+            "price": 6000,
+            "likeCount": 6
+          },
+          {
+            "id": 2407,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 02407",
+            "price": 6000,
+            "likeCount": 9
+          },
+          {
+            "id": 7707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 07707",
+            "price": 16000,
+            "likeCount": 7
+          },
+          {
+            "id": 4707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 04707",
+            "price": 16000,
+            "likeCount": 10
+          },
+          {
+            "id": 1707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 01707",
+            "price": 16000,
+            "likeCount": 2
+          },
+          {
+            "id": 9707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 09707",
+            "price": 16000,
+            "likeCount": 5
+          },
+          {
+            "id": 6707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 06707",
+            "price": 16000,
+            "likeCount": 8
+          },
+          {
+            "id": 3707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 03707",
+            "price": 16000,
+            "likeCount": 0
+          },
+          {
+            "id": 707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 00707",
+            "price": 16000,
+            "likeCount": 3
+          },
+          {
+            "id": 8707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 08707",
+            "price": 16000,
+            "likeCount": 6
+          },
+          {
+            "id": 5707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 05707",
+            "price": 16000,
+            "likeCount": 9
+          },
+          {
+            "id": 2707,
+            "brand": {
+              "id": 7,
+              "name": "W4 Brand 007"
+            },
+            "name": "W4 Product 02707",
+            "price": 16000,
+            "likeCount": 1
+          }
+        ],
+        "page": 0,
+        "size": 20,
+        "totalCount": 99
+      },
+      "response_sha256": "188a6bba7c60810037ce444643417d219018cb4b76dc587b354f435dfd51b6a5",
+      "response_bytes": [
+        2175
+      ],
+      "http_ms": {
+        "mean": 27.752159799941484,
+        "median": 26.764020999962668,
+        "p95": 36.93858299993735,
+        "min": 20.913584000481933,
+        "max": 57.869083000696264
+      },
+      "all_http_ms": [
+        23.28883400059567,
+        23.02662500005681,
+        27.532749999409134,
+        23.5308340006668,
+        25.304624999989755,
+        24.478166000335477,
+        27.92508399943472,
+        36.93858299993735,
+        22.850333999485883,
+        22.835708999991766,
+        21.90637500007142,
+        23.413832999722217,
+        21.008624999922176,
+        23.23087500008114,
+        57.869083000696264,
+        27.842749999763328,
+        20.913584000481933,
+        21.575750000010885,
+        27.449666999928013,
+        35.89983299934829,
+        29.971208999995724,
+        31.45858399966528,
+        28.189665999889257,
+        27.793250000286207,
+        34.37716600001295,
+        24.91924999958428,
+        26.078374999997322,
+        31.884207999610226,
+        29.524916999434936,
+        29.546249999839347
+      ],
+      "notes": [
+        "Sequential urllib HTTP calls including connection, full body read; JSON validation excluded from timing",
+        "Warm process/data; no concurrent load; not a throughput or production latency benchmark",
+        "SQL capture and EXPLAIN ANALYZE run separately after HTTP timing; no explicit ANALYZE TABLE",
+        "Business SELECT count excludes transaction/session commands; SQL is captured with actual bound values"
+      ],
+      "sql_probe": {
+        "business_select_count": 4,
+        "queries": [
+          {
+            "sql": "select bm1_0.id,bm1_0.created_at,bm1_0.deleted_at,bm1_0.description,bm1_0.name,bm1_0.updated_at from brand bm1_0 where bm1_0.id=7",
+            "explain_json": {
+              "query_block": {
+                "select_id": 1,
+                "cost_info": {
+                  "query_cost": "1.00"
+                },
+                "table": {
+                  "table_name": "bm1_0",
+                  "access_type": "const",
+                  "possible_keys": [
+                    "PRIMARY"
+                  ],
+                  "key": "PRIMARY",
+                  "used_key_parts": [
+                    "id"
+                  ],
+                  "key_length": "8",
+                  "ref": [
+                    "const"
+                  ],
+                  "rows_examined_per_scan": 1,
+                  "rows_produced_per_join": 1,
+                  "filtered": "100.00",
+                  "cost_info": {
+                    "read_cost": "0.00",
+                    "eval_cost": "0.10",
+                    "prefix_cost": "0.00",
+                    "data_read_per_join": "4K"
+                  },
+                  "used_columns": [
+                    "id",
+                    "created_at",
+                    "deleted_at",
+                    "updated_at",
+                    "description",
+                    "name"
+                  ]
+                }
+              }
+            },
+            "explain_analyze": "-> Rows fetched before execution  (cost=0..0 rows=1) (actual time=83e-6..125e-6 rows=1 loops=1)"
+          },
+          {
+            "sql": "select pm1_0.id,pm1_0.brand_id,pm1_0.created_at,pm1_0.deleted_at,pm1_0.name,pm1_0.price,pm1_0.quantity,pm1_0.updated_at from product pm1_0 where pm1_0.brand_id=7 and pm1_0.deleted_at is null order by pm1_0.price,pm1_0.created_at desc,pm1_0.id desc",
+            "explain_json": {
+              "query_block": {
+                "select_id": 1,
+                "cost_info": {
+                  "query_cost": "36.02"
+                },
+                "ordering_operation": {
+                  "using_filesort": true,
+                  "table": {
+                    "table_name": "pm1_0",
+                    "access_type": "ref",
+                    "possible_keys": [
+                      "idx_product_brand_deleted"
+                    ],
+                    "key": "idx_product_brand_deleted",
+                    "used_key_parts": [
+                      "brand_id",
+                      "deleted_at"
+                    ],
+                    "key_length": "17",
+                    "ref": [
+                      "const",
+                      "const"
+                    ],
+                    "rows_examined_per_scan": 99,
+                    "rows_produced_per_join": 99,
+                    "filtered": "100.00",
+                    "index_condition": "(`loopers_benchmark`.`pm1_0`.`deleted_at` is null)",
+                    "cost_info": {
+                      "read_cost": "26.12",
+                      "eval_cost": "9.90",
+                      "prefix_cost": "36.02",
+                      "data_read_per_join": "44K"
+                    },
+                    "used_columns": [
+                      "id",
+                      "created_at",
+                      "deleted_at",
+                      "updated_at",
+                      "brand_id",
+                      "name",
+                      "price",
+                      "quantity"
+                    ]
+                  }
+                }
+              }
+            },
+            "explain_analyze": "-> Sort: pm1_0.price, pm1_0.created_at DESC, pm1_0.id DESC  (cost=36 rows=99) (actual time=0.14..0.145 rows=99 loops=1)\n    -> Index lookup on pm1_0 using idx_product_brand_deleted (brand_id=7, deleted_at=NULL), with index condition: (pm1_0.deleted_at is null)  (cost=36 rows=99) (actual time=0.0303..0.109 rows=99 loops=1)"
+          },
+          {
+            "sql": "select bm1_0.id,bm1_0.created_at,bm1_0.deleted_at,bm1_0.description,bm1_0.name,bm1_0.updated_at from brand bm1_0 where bm1_0.id in (7) and bm1_0.deleted_at is null",
+            "explain_json": {
+              "query_block": {
+                "select_id": 1,
+                "cost_info": {
+                  "query_cost": "1.00"
+                },
+                "table": {
+                  "table_name": "bm1_0",
+                  "access_type": "const",
+                  "possible_keys": [
+                    "PRIMARY"
+                  ],
+                  "key": "PRIMARY",
+                  "used_key_parts": [
+                    "id"
+                  ],
+                  "key_length": "8",
+                  "ref": [
+                    "const"
+                  ],
+                  "rows_examined_per_scan": 1,
+                  "rows_produced_per_join": 1,
+                  "filtered": "100.00",
+                  "cost_info": {
+                    "read_cost": "0.00",
+                    "eval_cost": "0.10",
+                    "prefix_cost": "0.00",
+                    "data_read_per_join": "4K"
+                  },
+                  "used_columns": [
+                    "id",
+                    "created_at",
+                    "deleted_at",
+                    "updated_at",
+                    "description",
+                    "name"
+                  ]
+                }
+              }
+            },
+            "explain_analyze": "-> Rows fetched before execution  (cost=0..0 rows=1) (actual time=42e-6..42e-6 rows=1 loops=1)"
+          },
+          {
+            "sql": "select lm1_0.product_id,count(lm1_0.id) from product_like lm1_0 where lm1_0.product_id in (7407,4407,1407,9407,6407,3407,407,8407,5407,2407,7707,4707,1707,9707,6707,3707,707,8707,5707,2707,8007,5007,2007,7007,4007,1007,9007,6007,7,8307,5307,2307,7307,4307,1307,9307,6307,3307,307,8607,5607,2607,7607,4607,1607,9607,6607,3607,607,8907,5907,2907,7907,4907,1907,9907,6907,3907,907,9207,6207,3207,207,8207,5207,2207,7207,4207,1207,9507,6507,3507,507,8507,5507,2507,7507,4507,1507,9807,6807,3807,807,8807,5807,2807,7807,4807,1807,7107,4107,1107,9107,6107,3107,107,8107,5107,2107) group by lm1_0.product_id",
+            "explain_json": {
+              "query_block": {
+                "select_id": 1,
+                "cost_info": {
+                  "query_cost": "6562.80"
+                },
+                "grouping_operation": {
+                  "using_temporary_table": true,
+                  "using_filesort": false,
+                  "table": {
+                    "table_name": "lm1_0",
+                    "access_type": "index",
+                    "possible_keys": [
+                      "uk_product_like_user_product"
+                    ],
+                    "key": "uk_product_like_user_product",
+                    "used_key_parts": [
+                      "user_id",
+                      "product_id"
+                    ],
+                    "key_length": "16",
+                    "rows_examined_per_scan": 62738,
+                    "rows_produced_per_join": 31369,
+                    "filtered": "50.00",
+                    "using_index": true,
+                    "cost_info": {
+                      "read_cost": "3425.90",
+                      "eval_cost": "3136.90",
+                      "prefix_cost": "6562.80",
+                      "data_read_per_join": "1M"
+                    },
+                    "used_columns": [
+                      "id",
+                      "product_id"
+                    ],
+                    "attached_condition": "(`loopers_benchmark`.`lm1_0`.`product_id` in (7407,4407,1407,9407,6407,3407,407,8407,5407,2407,7707,4707,1707,9707,6707,3707,707,8707,5707,2707,8007,5007,2007,7007,4007,1007,9007,6007,7,8307,5307,2307,7307,4307,1307,9307,6307,3307,307,8607,5607,2607,7607,4607,1607,9607,6607,3607,607,8907,5907,2907,7907,4907,1907,9907,6907,3907,907,9207,6207,3207,207,8207,5207,2207,7207,4207,1207,9507,6507,3507,507,8507,5507,2507,7507,4507,1507,9807,6807,3807,807,8807,5807,2807,7807,4807,1807,7107,4107,1107,9107,6107,3107,107,8107,5107,2107))"
+                  }
+                }
+              }
+            },
+            "explain_analyze": "-> Table scan on <temporary>  (actual time=9.55..9.56 rows=90 loops=1)\n    -> Aggregate using temporary table  (actual time=9.55..9.55 rows=90 loops=1)\n        -> Filter: (lm1_0.product_id in (7407,4407,1407,9407,6407,3407,407,8407,5407,2407,7707,4707,1707,9707,6707,3707,707,8707,5707,2707,8007,5007,2007,7007,4007,1007,9007,6007,7,8307,5307,2307,7307,4307,1307,9307,6307,3307,307,8607,5607,2607,7607,4607,1607,9607,6607,3607,607,8907,5907,2907,7907,4907,1907,9907,6907,3907,907,9207,6207,3207,207,8207,5207,2207,7207,4207,1207,9507,6507,3507,507,8507,5507,2507,7507,4507,1507,9807,6807,3807,807,8807,5807,2807,7807,4807,1807,7107,4107,1107,9107,6107,3107,107,8107,5107,2107))  (cost=6563 rows=31369) (actual time=0.221..9.41 rows=641 loops=1)\n            -> Covering index scan on lm1_0 using uk_product_like_user_product  (cost=6563 rows=62738) (actual time=0.217..6.07 rows=62756 loops=1)"
+          }
+        ],
+        "previous_general_log": "0",
+        "previous_log_output": "FILE"
+      }
     }
   },
   "source_sha256": {
     "baseline.json": "2d6bb3c469bd56479516033d27861eafcd604beba25d8e672fc7b643715004f2",
-    "index-reset.json": "ff1d6cfaf451d8acf804a7d9145b1a4a192c7e260e800067f3ac008a75caed63"
+    "brand-filter-reset.json": "e1fbc23c50c2d0cd78e2474a3e33b9d5d5cdbde99c1a0e0a780d75fa657e70ba",
+    "brand-filter.json": "006433af487e0502beb448f4af9af4f3da02fbd2df4077993bcd1c7ae28c10a2",
+    "fixed-page-brand-index.json": "f1054f5b99e7c2ae7261bcc1699739cdb575551531c1501a8318e682de4ec7b9",
+    "index-reset.json": "ff1d6cfaf451d8acf804a7d9145b1a4a192c7e260e800067f3ac008a75caed63",
+    "price-sort-reset.json": "35c4abbd7f7289392f2b6d67c8a1e99e6ae1eb883de38872618e01bfb9dc23ab",
+    "price-sort.json": "bdbbe003ac11be3e9badd8f10573dd4ed1bea51e082e726d9ba4280040becd0c"
   }
 }
