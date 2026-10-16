@@ -124,6 +124,7 @@ class ProductBrandFilterIntegrationTest {
             product.markDeleted();
         }
         em.persist(product);
+        likes.initializeCount(product.getId());
         return product;
     }
 }

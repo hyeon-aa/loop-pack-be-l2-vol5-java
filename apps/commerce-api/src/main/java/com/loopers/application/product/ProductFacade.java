@@ -2,6 +2,7 @@ package com.loopers.application.product;
 
 import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.product.ProductService;
+import com.loopers.domain.like.LikeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,11 +15,14 @@ public class ProductFacade {
 
     private final BrandService brandService;
     private final ProductService productService;
+    private final LikeService likeService;
 
     @Transactional
     public ProductInfo create(Long brandId, String name, long price, int initialStockQuantity) {
         brandService.getForShare(brandId);
-        return ProductInfo.from(productService.create(brandId, name, price, initialStockQuantity));
+        var product = productService.create(brandId, name, price, initialStockQuantity);
+        likeService.initializeCount(product.getId());
+        return ProductInfo.from(product);
     }
 
     public ProductInfo get(Long id) {

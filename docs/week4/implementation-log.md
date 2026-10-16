@@ -441,6 +441,123 @@ HTTP는 연결·전체 본문 읽기를 포함한 urllib 시간이다. 별도 JV
 
 bootJar 성공, Checkstyle main/test 성공(UP-TO-DATE), LayeredArchitectureTest 1건 성공(실패·오류·skip 0). 이번에는 운영 Java 코드를 수정하지 않아 전체 기능 회귀를 재실행하지 않았다. seed 기반 SQL·HTTP 검증과 관련 아키텍처 검사를 수행했다. ADR 0002의 관계 집계와 ADR 0016의 삭제 대상 ID·PK 잠금 순서를 대조했고 정책 변경은 없다. design의 비정규화·잦은 무효화에 관한 추정을 미확정 후보로 정정했다. 커밋·push는 하지 않았다.
 
+<a id="counter-experiment"></a>
+
+## 15. 좋아요 카운터 비정규화 후보와 동시 부하 비교
+
+[실험 코드](../../scripts/experiments/java/com/loopers/experiment/LikeCounterExperimentTest.java), [회차별 측정 원본 · 100k-counter-experiment.json](measurements/like-counter-results.json), [직접 확인 SQL 19](../../scripts/sql/week4-19-like-counter.sql).
+
+### 가설과 구현 범위
+
+13절에서 확인한 hotspot의 50,093행 집계 읽기를 상품별 카운터 20행 조회로 줄일 수 있는지 확인했다. 현재 운영 LikeService/LikeRepository/LikeFacade와 HTTP 계약은 바꾸지 않았다. 실험용 일반 JDBC 코드이며 init script를 지정한 테스트에서만 소스에 포함한다. 두 모드 모두 같은 product_id 인덱스를 가진 관계 복제 테이블을 사용한다. 후보만 별도의 `(product_id PK, like_count CHECK >= 0)` 테이블을 추가한다. 상품 행을 갱신하지 않아 재고·가격 변경과 같은 행의 잠금을 공유하지 않는 후보를 택했다.
+
+후보 쓰기는 관계 INSERT 성공 건수만큼 +1, DELETE 실제 영향 건수만큼 -1 한다. 기존과 같이 특정 유니크 제약의 1062만 중복 등록으로 처리한다. 관계와 카운터 UPDATE는 같은 JDBC 트랜잭션에서 commit하며 SELECT FOR UPDATE로 값을 읽어 계산하지 않고 `like_count=like_count+delta`로 갱신한다. 카운터 없음·음수로 내려가는 상태는 성공으로 감추지 않고 rollback한다. 별도 카운터여도 같은 상품의 쓰기끼리는 같은 카운터 행을 갱신한다.
+
+초기 채움은 쓰기가 없는 복제에만 수행했다. 실제 서비스의 상품 생성 시 0행 준비, 기존 데이터 backfill 중 동시 쓰기, 운영 전환·복구는 이번 범위가 아니다. FK 없는 복제의 합성 사용자 ID를 사용하므로 기존 사용자 검증·상품 노출 검사·컨트롤러 오류 응답을 포함한 API 실험도 아니다.
+
+### 먼저 확인한 정확성
+
+일반·핫스팟 각각 아래 검증을 시간 측정 전에 실행했다. 상품 100,000개의 카운터가 관계 GROUP BY와 모두 일치하는지 검증했고, 각 부하 회차가 끝난 뒤에도 전수 대조했다.
+
+- 최초 등록 1건·중복 등록 0건, 최초 취소 1건·없는 관계 취소 0건.
+- 등록/취소 각각 관계 변경 직후와 카운터 변경 직후 예외 주입: 두 변경 모두 rollback.
+- 같은 관계의 동시 등록 8개는 정확히 1건만 반영, 동시 취소 8개도 정확히 1건만 반영.
+- 서로 다른 사용자 8명이 같은 상품을 등록·취소하면 각각 8건 보존.
+- 미커밋 등록 뒤 취소, 미커밋 취소 뒤 등록: 후행 연결이 대기하고 첫 commit 후 완료; 최종 관계와 카운터 일치.
+- 일반·핫스팟 첫 페이지의 좋아요 0 포함 20개 값을 독립 seed 공식과 대조.
+
+### 부하 조건과 측정 의미
+
+MySQL 8.0.46, REPEATABLE READ. 같은 JVM에서 두 모드 순서를 1회차 집계→카운터, 2회차 카운터→집계로 교대했다. 각 실행은 준비 2초·측정 8초다. 읽기 전용은 4 reader, 혼합은 4 reader + 2 writer다. worker별 지속 연결을 사용하고 요청 하나가 끝나면 다음 요청을 보내는 closed-loop 방식이다. 고정 RPS나 같은 읽기/쓰기 요청 비율을 주입한 실험이 아니므로 최대 처리량·운영 SLO로 일반화하지 않는다.
+
+읽기 시간은 JDBC 쿼리·전체 결과 소비와 결과 검증을, 쓰기는 트랜잭션 시작부터 관계 변경·후보 카운터 변경·commit·autocommit 복원 및 영향 건수 검증을 포함한다. SQL 서버 시간이나 HTTP 응답 시간이 아니다. 연결 생성·초기 backfill·EXPLAIN·정합성 전수 검사는 측정 밖이다. writer는 같은 상품 97407에 서로 다른 합성 사용자의 등록/취소를 번갈아 실행하며 종료 시 남은 관계를 제거한다.
+
+측정 요청은 읽기 545,996건·쓰기 22,103건이다(준비·정리·정확성 검증 요청 제외). 회차별 요청 수·중앙값·p95·p99·최댓값·ops/s를 JSON에 남겼다. 아래 범위는 두 회차의 최솟값~최댓값이며 신뢰구간이나 합친 표본의 p95가 아니다. 모든 측정 요청의 실패는 0건이며 오류가 나면 실험을 실패시켜 성공 표본만 남기지 않는다. 원시 개별 지연 배열은 저장하지 않았으며 회차별 집계치를 보존했다.
+
+| 분포   | 부하      | 방식      | 읽기 중앙값 ms |   읽기 p95 ms |        읽기 ops/s |
+| ------ | --------- | --------- | -------------: | ------------: | ----------------: |
+| 일반   | 읽기 전용 | 관계 집계 |    0.748~0.751 |   0.998~1.016 | 5143.500~5149.875 |
+| 일반   | 읽기 전용 | 카운터    |    0.586~0.594 |   0.792~0.810 | 6372.750~6510.250 |
+| 일반   | 혼합      | 관계 집계 |    0.830~0.844 |   1.214~1.266 | 4443.000~4570.375 |
+| 일반   | 혼합      | 카운터    |    0.660~0.692 |   0.994~1.104 | 5294.375~5669.875 |
+| 핫스팟 | 읽기 전용 | 관계 집계 |    7.498~7.604 | 10.730~10.962 |   498.000~499.375 |
+| 핫스팟 | 읽기 전용 | 카운터    |    0.592~0.614 |   0.805~0.990 | 5679.500~6418.250 |
+| 핫스팟 | 혼합      | 관계 집계 |    7.604~8.801 | 10.968~12.731 |   423.125~491.375 |
+| 핫스팟 | 혼합      | 카운터    |    0.666~0.678 |   1.022~1.050 | 5493.375~5592.500 |
+
+일반 분포는 집계 자체가 93행이라 이득이 작았다. 핫스팟은 50,093행 범위 집계가 카운터 PK 20행 조회로 바뀌었고 두 회차 모두 읽기 p95가 크게 줄었다. 이 결과는 카운터 후보의 검토 근거를 강화한다. HTTP 전체가 같은 배율로 개선된다는 뜻은 아니다.
+
+### 쓰기 대가
+
+| 핫스팟 혼합 부하     |  관계 집계 방식 |     카운터 방식 |
+| -------------------- | --------------: | --------------: |
+| 등록 중앙값          |   4.531~4.925ms |   6.056~6.140ms |
+| 취소 중앙값          |   4.444~4.711ms |   5.913~5.937ms |
+| 등록 p95             |  9.067~10.829ms |   8.981~9.090ms |
+| 취소 p95             |  9.149~10.072ms |   8.802~9.126ms |
+| 등록+취소 합산 ops/s | 346.125~388.750 | 309.500~313.250 |
+
+추가 UPDATE와 같은 상품 카운터의 직렬화가 생기는 구조이며 이 실험에서 쓰기 중앙값·처리량의 비용을 관찰했다. 다만 잠금 대기 시간을 별도로 수집하지 않아 감소분 전체를 행 잠금 때문이라고 단정하지 않는다. p95는 표본 변동으로 범위가 겹치거나 역전되므로 모든 쓰기 지표가 나빠졌다고 적지 않는다. 서로 다른 상품으로 분산된 쓰기·더 많은 writer·고정 도착률은 미검증이다.
+
+카운터 100,000행의 할당량은 두 DB 모두 4,734,976 bytes(약 4.52MiB, clustered data 포함)였다. 13절의 보조 인덱스만의 할당량과 다른 범위다.
+
+### 판단과 다음 적용 경계
+
+현재 증거는 **핫스팟 읽기 경로의 비정규화 후보가 유효하다**는 결론을 지지한다. 운영 도입은 상품 생성/초기 채움·등록/취소의 실제 트랜잭션 연결과 기존 HTTP 계약 회귀까지 갖춘 다음 단계로 둔다. 지금은 ADR 0002의 관계 집계·ADR 0017의 운영 쓰기 계약을 유지한다. 운영에 채택하면 이 ADR들의 결정과 책임을 함께 갱신해야 한다. 이번 실험에 적용 결정 ADR을 만들지 않은 이유다.
+
+카운터는 캐시 miss·Redis 장애 시 DB 집계 부담을 줄일 수 있다. hit는 이미 저장된 응답을 읽으므로 이 실험의 SQL 개선 배율을 hit 개선으로 적용하지 않는다. 값 변경의 무효화·늦은 채움 문제는 별도로 남는다. 누적 좋아요 수와 쓰기 요청 빈도는 구분하며 이번 혼합 부하는 의도적으로 쓰기 쏠림을 만든 조건이다.
+
+### 실행·정리 확인
+
+실험 테스트와 자동 포함 ArchUnit 총 2건 통과(실패·오류·skip 0), 실험 소스를 포함한 Checkstyle test 통과. 일반·핫스팟에서 각각 자신이 생성한 관계 복제 2개와 카운터 1개를 finally에서 제거했고, 원본 상품·좋아요의 건수/합계와 전체 인덱스 정의가 전후 일치했다. 건수/합계는 보조 변경 탐지이며 암호학적 동일성 증명은 아니다. 직접 확인용 19 SQL도 실행하여 50,093행→20행 계획과 mismatch=0을 확인했다.
+
+SQL 01~18의 기존 실행 문장 목록을 정리 전 기록과 비교해 조건·정렬·문장 순서 보존을 확인했다. 명시적 USE와 06의 주석 속 준비·정리 DDL을 실행 블록으로 꺼낸 차이만 있다. SQL에 섞인 실행 계획 출력·대화 메모는 14절에 보존했다. 운영 Java 코드는 수정하지 않았고 커밋·push는 하지 않았다.
+
+일반 `:apps:commerce-api:check`도 BUILD SUCCESSFUL로 종료했다. XML 49개 suite·260개 테스트, 실패·오류·skip 0을 확인했고 실험 테스트는 일반 결과에 포함되지 않았다. Checkstyle main/test와 ArchUnit을 포함한다. 두 10만 건 DB에는 기존 brand/product/product_like/users 네 테이블만 남았음을 마지막으로 확인했다.
+
+<a id="counter-production"></a>
+
+## 16. 카운터 실제 코드 적용 — 중간 저장
+
+사용자가 비정규화 실제 적용을 요청해 구현한 뒤, 사용량 부족으로 중간 기록을 요청했다. 아래 목록은 중단 당시 상태다. 이후 재개 기록과 17절에서 실제 API 재측정·ADR 반영·브랜드 중복 조회 제거까지 완료했다. 15절까지의 “운영 코드는 관계 집계 유지”는 당시 기록이다. 커밋·push는 하지 않았다.
+
+### 완료한 코드
+
+- `domain/like/LikeCountModel`: `product_like_count(product_id PK, like_count)` JPA 스키마 매핑, 0 이상 CHECK. 상품 행과 별도 저장.
+- `ProductFacade.create`: 기존 브랜드 확인·상품 생성 뒤 `LikeService.initializeCount`를 호출해 같은 트랜잭션에 0 카운터 생성.
+- `LikeRepositoryImpl`: 등록 INSERT 실제 성공 시 +1, 조건 DELETE 실제 반영 건수만큼 -1. 특정 유니크 충돌의 중복 등록은 0회 증감. 관계와 카운터는 같은 트랜잭션에서 commit/rollback. 카운터 누락·감소 시 음수 가능 상태는 IllegalStateException으로 실패시키며 관계 변경도 rollback.
+- 조회 `countByProductIds`: GROUP BY 대신 카운터 일괄 조회. 요청 ID의 카운터가 누락되면 0으로 감추지 않고 실패. 올바르지만 오래된 양수 값까지 매 조회 검출하는 구조는 아니며 정합성은 원자적 쓰기와 대조/복구 절차로 유지한다.
+- 기존 LikeRepository의 save/delete 보조 경로도 관계+카운터 경로로 통일. LikeJpaRepository의 집계 메서드는 테스트에서 원본 관계 확인용으로 남아 있고 고객 조회에서는 사용하지 않는다.
+- 삭제 상품의 관계·카운터는 남기고 본인 취소를 허용한다. 최초 201·중복 200·취소 204, 삭제 비노출 계약은 유지.
+
+### 테스트와 초기화
+
+- 새 `LikeCounterIntegrationTest` 7건: 상품/카운터 함께 생성·rollback, HTTP 상태·상세/목록/내 좋아요 조회, 카운터 누락 시 등록 rollback·조회 실패, 잘못된 0 카운터 취소 rollback, 외부 트랜잭션 rollback, 삭제 후 취소, offline backfill 재실행/0개/삭제 상품 검증.
+- 구현 전 새 테스트 6건이 카운터 테이블 미존재 등으로 실패하는 RED를 확인했다. 구현 후 좋아요 관련·ProductFacade·ArchUnit 총 23건 통과. 당시 Checkstyle의 unused import 1건을 제거했다.
+- 기존 LikeConcurrencyTest는 실제 ProductFacade로 상품을 만들고 각 시나리오 후 카운터와 관계 집계 일치를 추가 확인한다. ProductFacadeTest·ProductBrandFilterIntegrationTest·BrandRemovalTransactionTest의 fixture를 새 불변식에 맞췄으며 기존 기대값은 유지했다.
+- 최종 `:apps:commerce-api:check :apps:commerce-api:bootJar` BUILD SUCCESSFUL. XML 결과: 50 suites, 267 tests, 실패 0·오류 0·skip 0. Checkstyle main/test와 ArchUnit 포함. 실행 중이던 작업은 모두 종료됐다.
+- `scripts/sql/week4-20-like-counter-backfill.sql`: 쓰기 앱을 중지한 offline 전환용. CREATE IF NOT EXISTS → 원본 READ/카운터 WRITE table lock → 0개·삭제 상품 포함 집계 upsert → unlock → 누락/불일치·고아 검증. 이전 버전 쓰기 앱과 새 버전을 함께 운영하는 전환은 지원하지 않는다.
+- `scripts/migrate-week4-like-counter.py`: 명시한 로컬 benchmark DB만 초기화하고 원본 관계·상품 건수/합계·인덱스 보존 확인. 기존 결과 덮어쓰기를 거부하고 앱 연결이 남으면 중단한다.
+- 세 로컬 DB에 실제 적용 완료: loopers_benchmark 카운터 10,000행/좋아요 합 62,756, loopers_benchmark_100k 100,000행/628,186, loopers_benchmark_100k_hotspot 100,000행/678,186. 모두 mismatch=0·orphan=0. 카운터 테이블은 **유지해야 하는 실제 스키마**다. [원본 · counter-backfill.json](measurements/like-counter-results.json).
+- SQL 01~19는 직전 작업에서 정리 완료한 상태 유지. 20도 짧은 목적 주석과 이 절 링크만 둔다.
+
+### 작업 재개 기록 (Claude Code)
+
+사용량 소진으로 멈춘 지점을 다시 확인했다. 작업 트리의 카운터 코드는 깨지지 않았고, 실패 원인은 로컬 Docker/testcontainers 소켓 문제(`fix-docker-testcontainers` 스킬로 알려진 증상)였다. colima 터널을 다시 연결한 뒤 `:apps:commerce-api:test`(`LikeCounterIntegrationTest` 등 관련 스위트)와 전체 `:apps:commerce-api:check`를 재실행해 **267개 테스트, 실패·오류·skip 0, Checkstyle·ArchUnit 통과**를 확인했다. 커밋·push는 하지 않았다.
+
+**1번(실제 API 실행) 완료.** `apps/commerce-api/build/libs/commerce-api-a083b48.jar`를 새로 빌드하고 `scripts/measure-week4-100k-api.py --jar apps/commerce-api/build/libs/commerce-api-a083b48.jar --output docs/week4/measurements/100k-counter-api.json`을 실행했다. `docker compose`가 testcontainers용 colima 컨텍스트가 아니라 원래 `mysql-benchmark` 컨테이너가 있는 `desktop-linux` 컨텍스트를 봐야 해서 `DOCKER_CONTEXT=desktop-linux`를 지정했다(`DOCKER_HOST`를 전역으로 바꾸면 기존 benchmark 컨테이너를 못 찾는다).
+
+| DB                             | HTTP 중앙값 |     p95 | SELECT 수 | 97407 likeCount |
+| ------------------------------ | ----------: | ------: | --------: | --------------: |
+| loopers_benchmark_100k(일반)   |     17.84ms | 32.90ms |         5 |               2 |
+| loopers_benchmark_100k_hotspot |     13.09ms | 15.32ms |         5 |          50,002 |
+
+SQL 캡처로 좋아요 집계 대신 `select product_id, like_count from product_like_count where product_id in (...)`가 실행됨을 확인했다(업무 SELECT 5개 유지). 응답의 `likeCount`도 두 DB에서 기대값과 정확히 일치한다.
+
+**2번(13절 대비 비교).** 카운터 적용 전후 실제 캡처에서 좋아요 관계 집계가 카운터 20행 조회로 바뀌었고 두 DB의 응답이 독립 기대값과 일치했다. 별도 JVM·각 30표본의 HTTP 지연은 분포 동등성이나 순수 개선 배율의 증거로 사용하지 않는다. 13절도 10만 건 데이터이며, 이전 기록의 “13절의 1만 건” 표기는 정정한다. JDBC 후보의 동일 조건 읽기·혼합 부하 비교는 15절 원본을 근거로 별도 설명한다.
+
+**3~5번(ADR·design/plan/setup 정식 갱신, 최종 코드·문서·DB 대조 보고) 완료.** [ADR 0020](../adr/0020-like-count-denormalized-counter.md) 작성, [ADR 0002](../adr/0002-like-count-is-derived.md)를 Superseded로 변경. design.md·plan.md·setup.md의 중간 저장 안내와 "미결정" 서술을 실제 적용 상태로 갱신했다. ADR 0020에는 3주차 동시성 테스트 재검증 결과와, `BrandRemovalTransactionTest`·`LikeConcurrencyTest`의 fixture 변경 이유(카운터 불변식에 맞춘 것, `LikeConcurrencyTest`는 카운터-관계 일치 검증을 추가로 얻음)도 기록했다.
+
 ## 17. 브랜드 중복 조회 제거
 
 `ProductQueryService.getList()`가 `brandService.get(brandId)`로 브랜드를 확인한 뒤, `enrich()` 안에서 `brandService.getAllActiveByIds(...)`로 같은 브랜드를 다시 조회하고 있었다. 9절에서 이미 업무 SELECT 5개를 나열했지만("브랜드 확인·COUNT·상품 페이지·브랜드 정보·좋아요 집계") 그중 "브랜드 확인"과 "브랜드 정보"가 중복이라는 점은 그때 짚지 않았다.

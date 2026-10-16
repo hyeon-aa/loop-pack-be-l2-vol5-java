@@ -231,3 +231,13 @@ idx_product_brand_price의 앞 두 컬럼은 idx_product_brand_deleted와 같은
 
 위 조건·페이지 비교의 공통 판단은 인덱스 존재·Sort 유무만으로 비용을 판단하지 않고 조건·분포·읽는 범위를 함께 보는 것이다. 실험용 테이블·인덱스는 정리했고 05와 기존 브랜드 인덱스를 유지한다.
 
+<a id="like-count-design"></a>
+
+## 좋아요 카운터 비정규화
+
+상품 페이지를 고르는 인덱스 비교에 이어, 선택한 상품에 붙이는 좋아요 수의 저장·갱신 방식을 정리한다. 도입 배경과 대안 비교는 [ADR 0020](../adr/0020-like-count-denormalized-counter.md#context)에 있다.
+
+좋아요 원본 관계와 별도로 `product_like_count`에 상품별 개수를 저장한다. 상품 엔티티에 like_count를 넣지 않는다. 좋아요 관계 INSERT/DELETE가 실제 반영됐을 때만 같은 트랜잭션에서 카운터를 원자적으로 증감한다. 중복 등록·없는 취소·rollback·동시 변경·생성 시 초기화·backfill을 검증한다([ADR 0020](../adr/0020-like-count-denormalized-counter.md)).
+
+같은 상품의 좋아요 쓰기는 카운터 한 행에서 경합할 수 있다. 상품 행의 재고·가격 쓰기와 분리했다는 사실을 쓰기 비용이 없다는 뜻으로 해석하지 않는다. 좋아요순 전체 정렬을 임의의 20개 안에서 정렬하는 방식으로 바꾸지 않는다.
+
