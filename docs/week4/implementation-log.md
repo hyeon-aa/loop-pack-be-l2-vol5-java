@@ -597,6 +597,131 @@ SQL 캡처로 좋아요 집계 대신 `select product_id, like_count from produc
 
 주문 금액·재고·포인트의 기존 회귀도 전체 검사에 포함된다. Redis 장애 테스트는 사용자의 공유 Redis가 아닌 별도 컨테이너를 중단한다. TTL 회복 테스트는 자신의 키를 100ms로 단축하며 기본 300초를 실제 기다린 것은 아니다. 재연결만으로 즉시 최신이라는 보장은 하지 않는다. 테스트 수와 API 측정 요청 수는 합산하지 않는다.
 
+<a id="price-cache-providers"></a>
+
+## 22. 캐시 없음·로컬·Redis 실제 API 비교
+
+같은 인덱스·일반 10만 건 복제 DB·브랜드 7 가격순 첫 20개·상품별 좋아요 수·isLiked·브랜드·page/size와 사용자 헤더 95를 고정했다. 독립 기대 응답에 총상품수는 없다. Python이 현재 JAR의 HTTP API를 호출한다. provider 실행 순서를 DB→local→Redis / local→Redis→DB / Redis→DB→local로 바꿨다. 각 모드는 워밍업 100회 뒤 200회 측정했다.
+
+| 경우 | 1차 중앙값(ms) | 2차 중앙값(ms) | 3차 중앙값(ms) | SELECT 수 |
+| --- | ---: | ---: | ---: | ---: |
+| 캐시 없음 | 10.051 | 10.273 | 10.028 | 5 |
+| 로컬 miss | 8.491 | 8.607 | 8.467 | 5 |
+| 로컬 hit | 10.695 | 10.021 | 10.063 | 5 |
+| Redis miss | 10.334 | 9.762 | 10.872 | 5 |
+| Redis hit | 12.494 | 10.823 | 11.123 | 5 |
+
+대표 GET의 SQL은 모든 경우 5개이며 총상품수 COUNT는 없다. DB-only/miss는 브랜드·가격순 페이지·좋아요 카운터, hit는 브랜드·활성 ID·좋아요 카운터다. 양쪽 모두 활성 사용자 확인과 페이지 상품의 개인 관계 조회가 추가된다. 헤더 없는 별도 대표 GET은 SELECT 3개이며 isLiked=false였다. 시간 표본마다 hit 로그를 남긴 방식은 아니고, 통제한 조건과 측정 후 대표 SQL로 경로를 확인했다. p95·모든 시간 표본·실행 계획은 [원본](measurements/100k-price-cache-providers-personal.json)에 보존한다. [방법 설명](price-cache-comparison.md).
+
+Redis JSON에는 items만 있고 가격순 첫 20개 ID가 기대값과 같았다. 현재 키의 크기는 원본의 redis_value_bytes/redis_key_memory_bytes에 기록한다. JVM RSS는 전체 앱이고 키 메모리와 동등한 캐시 메모리 지표가 아니다. 로컬 miss가 hit보다 짧은 결과는 순서·JIT·준비용 PUT 영향과 분리하지 못했다. 별도 JVM의 작은 차이를 보편적인 우열로 일반화하지 않는다.
+
+<a id="price-cache-change-check"></a>
+
+### 가격 변경과 두 앱
+
+miss 준비는 같은 이름/가격의 관리자 PUT으로 정상 commit 후 DEL을 일으켰다. 이 PUT은 GET 시간 밖이다. 별도 변경 혼합에서는 실제 첫 상품 가격을 원래 값과 1 낮은 값으로 번갈아 바꾸고 변경 1회당 GET 10회를 보냈다. 매 GET의 전체 응답을 기대값과 비교했다. GET/PUT 시간은 각 API 전체 비용이며 정합성은 응답 비교로 확인한다. PUT은 캐시 삭제만의 순수 비용이 아니다.
+
+두 JVM A/B가 같은 DB를 사용하도록 실행해 둘을 채운 뒤 A에서 가격을 변경했다. 세 번째 반복에서 local/Redis 모두 A는 최신, B는 local에 옛 가격 잔존/Redis에 최신 가격 반영을 확인했다. 한 컴퓨터에서 서로 다른 포트로 직접 요청한 실험이며 자동 요청 분배나 모든 경쟁을 검증한 것은 아니다. 정상 변경 후 순차 조회의 범위로 읽는다.
+
+원본의 completed/source_unchanged/owned_resources_cleaned는 true다. 고유 복제 DB·권한·키·앱을 정리했고 원본 데이터·인덱스를 보존했다. 실험 스크립트는 [compare-week4-price-cache-providers.py](../../scripts/compare-week4-price-cache-providers.py)다.
+
+<a id="price-cache-skew"></a>
+
+## 23. 상품 쏠림·동시 조회
+
+원본을 복사한 일반/상품 쏠림 두 DB를 사용했다. 상품 100,000건·인덱스·가격·삭제 상태·카운터를 유지하고 쏠림 복제 DB만 ID<=90,000의 브랜드를 7로 바꿨다. 브랜드 7의 활성 상품은 일반 990개/쏠림 87,390개다. 건수는 데이터 준비용 확인이고 API 총상품수 조회가 아니다. 실제 API는 가격순 첫 20개와 좋아요 수·사용자 95의 isLiked를 반환한다.
+
+순차는 모드별 워밍업 100회/측정 200회, 세 번 반복하며 앱과 hit/miss 순서를 바꿨다. 아래 범위는 세 중앙값 중 최솟값~최댓값이다.
+
+| 경우 | 일반 중앙값(ms) | 쏠림 중앙값(ms) |
+| --- | ---: | ---: |
+| 캐시 없음 | 9.472~9.702 | 9.830~12.408 |
+| 로컬 miss | 8.859~9.703 | 8.386~9.710 |
+| 로컬 hit | 8.572~10.371 | 8.770~10.561 |
+| Redis miss | 9.762~10.739 | 10.581~11.935 |
+| Redis hit | 9.461~11.235 | 9.803~12.560 |
+
+모든 대표 순차 SQL은 5개이며 총상품수 COUNT는 없었다. 첫 반복의 DB-only 대표 EXPLAIN ANALYZE에서 일반·쏠림 모두 idx_product_brand_price의 실제 rows=20, LIMIT 20·Sort 없음이었다. 실제 SQL·계획은 원본에 보존했다. 데이터 준비의 COUNT나 checksum을 API 시간에 넣지 않았다.
+
+동시는 한 앱에 Python 20개 스레드를 barrier에서 함께 출발시켰다. 준비용 3묶음 뒤 10묶음×20요청, 세 번 반복했다. benchmark DB 풀 최대는 40이다. 시작 시 빈 상태는 모든 요청의 miss를 뜻하지 않는다. SQL 시작/서버 도착을 동시에 강제하거나 지속 최대 처리량을 측정한 것은 아니다.
+
+| 경우 | 일반 p95(ms) | 쏠림 p95(ms) |
+| --- | ---: | ---: |
+| 캐시 없음 | 35.042~48.154 | 35.426~42.583 |
+| 로컬 / 시작 시 빈 캐시 | 34.794~53.387 | 34.661~58.934 |
+| 로컬 / 미리 채운 캐시 | 36.582~38.460 | 39.404~69.939 |
+| Redis / 시작 시 빈 캐시 | 40.767~61.760 | 34.777~49.017 |
+| Redis / 미리 채운 캐시 | 31.125~44.668 | 36.083~45.696 |
+
+### 별도 동시 20요청에서 상품 페이지를 다시 읽은 횟수
+
+| 경우 | 일반 1/2/3차 | 쏠림 1/2/3차 |
+| --- | ---: | ---: |
+| 캐시 없음 | 20 / 20 / 20 | 20 / 20 / 20 |
+| 로컬 / 빈 캐시 | 7 / 8 / 3 | 4 / 7 / 4 |
+| 로컬 / 채운 캐시 | 0 / 0 / 0 | 0 / 0 / 0 |
+| Redis / 빈 캐시 | 10 / 11 / 11 | 6 / 8 / 10 |
+| Redis / 채운 캐시 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+모든 별도 동시 묶음에서 총상품수 COUNT=0, SELECT=100이었다. 사용자 확인·개인 관계 SELECT는 각각 20번이며 개인 관계 SQL 한 번에 해당 페이지 상품 20개만 전달했다. 채운 캐시에도 브랜드·활성 ID·좋아요 카운터·사용자·개인 관계의 DB 조회가 남는다. 빈 캐시는 같은 페이지를 여러 번 DB에서 만드는 현상이 남았으며 동시 miss를 합치는 기능은 없다. SQL 로깅은 별도 요청 묶음으로 수행하므로 그 횟수를 시간 표본의 정확한 hit rate로 해석하지 않는다.
+
+측정 GET 12,000개(순차 6,000/동시 6,000)의 전체 응답이 독립 seed 기대값과 같았고 동시 오류는 0이었다. 18개 앱 실행, 원본 checksum·건수/인덱스 및 카운터 checksum·건수/합계 보존, 자신의 복제 DB·권한·키·프로세스 정리를 확인했다. [원본](measurements/100k-price-cache-skew-personal.json), [실행 코드](../../scripts/measure-week4-price-cache-skew.py), [쉬운 설명](price-cache-skew.md).
+
+<a id="price-cache-close-checklist"></a>
+
+## 24. 가격순 범위의 판단과 Checklist
+
+가격순 첫 페이지는 인덱스를 사용하는 상품 페이지와 좋아요 카운터 조회로 구성된다. hit도 필요한 DB 확인이 남으며 Redis가 반드시 필요하다는 성능 근거는 이번 로컬 실험에서 얻지 못했다. 과제의 기본 Redis 구현은 학습 대상으로 유지하고 운영 도입은 실제 요청량·요구 응답 시간·변경 반영 책임으로 판단한다. 동시 miss 중복 방지·다른 정렬 캐시·장기 부하를 이번 기본 과제의 선행 조건으로 추가하지 않는다.
+
+[design의 가격순 캐시 선택](design.md#price-cache-choice)에 현재 로그인 조회의 세 반복 중앙값 범위, 캐시 없음·로컬·Redis의 선택 이유, 측정한 비용과 미측정 비용을 모았다. 수치는 22절의 기존 원본과 대조했고 이번 설명 보완에서 새 성능 측정이나 코드·설정 변경은 하지 않았다. 로컬의 다중 앱 무효화와 추가 정합성 구조는 후속 판단으로 남긴다.
+
+과제 Checklist의 완료 근거를 아래에 연결했다. 현재 목록 계약은 [ADR 0022](../adr/0022-product-list-without-total-count.md)와 [ADR 0023](../adr/0023-product-list-personal-like-state.md)을 따른다.
+
+| 완료 | 항목 | 근거 |
+| --- | --- | --- |
+| [x] | 실제 API의 필터·정렬·페이지·삭제 조건 | ProductBrandFilterIntegrationTest, 세 정렬의 Controller 응답 검사 |
+| [x] | 같은 데이터의 SQL·계획·결과·지연 비교 | [인덱스 원본](measurements/index-results.json), 현재 [다섯 경우 원본](measurements/100k-price-cache-providers-personal.json)·[쏠림 원본](measurements/100k-price-cache-skew-personal.json) |
+| [x] | 좋아요 수와 likes_desc 전체 정렬 | ProductQueryServiceTest, LikeCounterIntegrationTest, LikeConcurrencyTest |
+| [x] | miss/hit 일치·원본 호출 재사용 | Redis/로컬 통합, 실제 API의 페이지 선택 SQL 생략·활성 ID 확인 |
+| [x] | 키·TTL·개인 정보·영향 쓰기 | ADR 0021, PricePage·ProductFacade·BrandFacade·AFTER_COMMIT listener |
+| [x] | 변경·삭제·rollback·실패/경쟁의 보호 | PricePageCacheIntegrationTest의 실제 PUT·삭제·rollback·DEL 실패·늦은 채움·만료 |
+| [x] | Redis 실제 장애·우회·복구·정리 | 전용 Testcontainer stop/start·DB fallback·명시적 자신의 키 DEL 뒤 재채움 |
+| [x] | 회귀·lint·ArchUnit·비용/한계 | [가격순 단계 310건 집계](measurements/price-cache-personal-validation.json), 측정 문서와 ADR |
+
+추가한 카운터는 원본 관계와 중복·동시 변경 후 일치하는지 확인했다([ADR 0020 검증표](../adr/0020-like-count-denormalized-counter.md#validation-and-limits)). 인기순 캐시·이벤트/배치 집계·Sorted Set을 구현해야 이 항목이 완료되는 것은 아니다.
+
+기술 글 완성과 PR 정리/제출은 남아 있다. 자동 검증 완료는 사용자의 직접 실습 완료를 뜻하지 않는다.
+
+## 25. 가격 변경 흐름 읽기
+
+[캐시 기본 문서의 A/B/C 예시](cache-basics.md#가격-변경-흐름을-예로-읽기)는 저장 → 재사용 → 관리자 변경 commit 뒤 삭제 → 다음 조회 재채움 순서를 설명한다. 예시 가격은 측정값이 아니다. 별도 수동 실습 환경을 추가하지 않는다. 실제 변경·삭제·rollback·실패/늦은 채움은 21절의 현재 통합 테스트와 22절의 실제 API로 확인한다.
+
+<a id="redis-read-cost"></a>
+
+## 26. Redis GET·JSON 변환 보조 측정
+
+기존 PricePageRedisConfig·StringRedisTemplate·PricePage와 Boot JacksonAutoConfiguration/프로젝트 JacksonConfig를 재사용하는 별도 Java 프로그램을 실행했다. DB에서 사전에 읽은 브랜드 7의 가격순 20개를 실험 전용 키에 저장했고 JSON은 1771바이트였다. HTTP 앱의 요청 중간 계측이나 캐시 어댑터 전체 시간은 아니다.
+
+독립 JVM 세 개, 각각 워밍업 1,000회 뒤 순차 1,000회다. 매 요청에 System.nanoTime으로 GET 직전/문자열 수신 직후/JSON 변환 직후를 기록했다. 값 비교·로그 출력은 시간 밖이며 측정 루프에 HTTP/DB 조회가 없다. 같은 연결을 재사용하고 기존 200ms 연결/명령 제한을 사용했다.
+
+| 구간 | 중앙값(ms) | p95(ms) |
+| --- | ---: | ---: |
+| Redis GET → 문자열 수신 | 0.541~0.720 | 0.770~2.669 |
+| JSON → 상품 목록 | 0.046~0.061 | 0.078~0.173 |
+| GET 시작 → 변환 완료 | 0.591~0.794 | 0.834~2.780 |
+
+범위는 세 반복 통계의 최솟값~최댓값이다. 전체 구간은 각 요청에서 직접 계산한 합계이며 구간별 중앙값/p95를 단순 합산하지 않았다. 측정 3,000번 모두 원본 문자열/DTO와 같았고 기존 캐시 어댑터 결과도 같았다. JAR/현재 컴파일·소스 정합성, 원본 데이터·인덱스 보존·실험 키 삭제를 확인했다. 원시 표본·payload·hash·Jackson 모듈·TTL은 [원본](measurements/price-cache-redis-read-cost-personal-build.json)에 보존한다.
+
+GET에는 클라이언트 대기·네트워크 왕복·Redis 처리·문자열 변환이 섞인다. 순수 네트워크 시간·운영 원격 통신 비용으로 부르지 않고 API 전체 시간에서 빼지 않는다. 기술 글에는 짧은 보조 근거로 사용하며 추가 세분화를 과제 완료의 조건으로 요구하지 않는다.
+
+```bash
+python3 scripts/measure-week4-redis-read-cost.py \
+  --jar apps/commerce-api/build/libs/commerce-api-a083b48.jar \
+  --output docs/week4/measurements/price-cache-redis-read-cost-personal-build.json
+```
+
+새 출력 경로로 실행해 기존 측정 원본을 덮어쓰지 않는다. [Python 실행기](../../scripts/measure-week4-redis-read-cost.py)는 현재 JAR의 클래스를 검사·임시 추출하고 [Java 측정 프로그램](../../scripts/probes/PriceCacheReadCost.java)을 컴파일해 실행한다. Python 구문·Java 컴파일·실제 세 JVM 실행과 결과 검증을 완료했다.
+
 <a id="product-list-personal-like-state"></a>
 
 ## 27. 상품 목록의 내 좋아요 표시
@@ -613,6 +738,79 @@ SQL 캡처로 좋아요 집계 대신 `select product_id, like_count from produc
 | 오류 처리 | 개인 관계 DB 오류를 false로 숨기지 않고 전파 |
 
 전체 310건은 현재 개인화 구현을 포함한 회귀 검사다. 22~23절은 같은 JAR로 다시 실행했으며 사용자 95의 isLiked를 독립 seed 계산과 매 응답 비교했다. 일반 페이지는 12개 true/8개 false, 쏠림 페이지는 20개 false였다. 다른 개인 관계 분포까지 대표한다고 주장하지 않는다. 헤더 없는 조회는 별도 표로 구분했다. 이전 개인화 전 원본 JSON은 당시 측정으로 남기며 현재 개인화 경로의 수치로 사용하지 않는다. 좋아요 변경과 겹쳐 이미 시작한 트랜잭션까지 최신이라고 주장하지 않는다.
+
+<a id="likes-cache-basic"></a>
+
+## 28. 좋아요순 ID 페이지 캐시와 실제 API 비교
+
+이 절은 ADR 0024 단계의 기록이다. 현재 정책·코드는 [30절](#popular-cache-snapshot)과 [ADR 0025](../adr/0025-popular-page-snapshot-with-ttl.md)를 따른다. 아래 시간·326건 검사는 해당 이전 빌드의 결과이며 현재 구현 재측정이 아니다.
+
+현재 인기순 실험은 브랜드 7의 기존 likes_desc·page=0·size=20·X-USER-ID=95다. 상품 10만 건, 기존 상품/좋아요 인덱스와 별도 카운터를 그대로 복사했다. 새 seed 생성·원본 변경·인덱스 추가는 없다. 총상품수는 제공하지 않는다. [결정 ADR 0024](../adr/0024-likes-page-cache-with-commit-eviction.md), [설계·판단](design.md#likes-cache-choice).
+
+### 기준선과 현재 빌드 구분
+
+구현 전 JAR의 DB-only API를 세 JVM에서 워밍업 100/측정 200회 실행했다. 세 중앙값은 15.294 / 15.243 / 15.199ms였다. 이 원본을 아래 측정 JSON의 baseline_before_cache에 그대로 포함했다. 구현 전 hash는 `93281c5be8991704062b40a7ec5fd55b79ef0bf270c22df17adb97aca49193d2`, 현재 검증/비교 hash는 `2499b6930af6702a8a81f1b147fdd637214401a9ae97fc4139ddc4a220b7349b`다. 이전 값을 현재 빌드의 시간으로 사용하지 않는다.
+
+현재 빌드에서도 DB-only/miss/hit을 새로 측정했다. provider 순서는 DB→Redis / Redis→DB / DB→Redis이고 Redis hit/miss 순서도 교대했다. 모드마다 워밍업 100/측정 200회다. HTTP 요청부터 본문 수신까지를 재고 JSON 기대값 비교는 시간 밖에서 한다. 각 GET에서 독립 seed 계산의 상품·순서·이름·가격·좋아요 수·isLiked·브랜드·page/size가 같은지 확인했다.
+
+| 경우 | 1차 중앙값(ms) | 2차 중앙값(ms) | 3차 중앙값(ms) | 세 p95 범위(ms) |
+| --- | ---: | ---: | ---: | ---: |
+| 캐시 없음 | 15.446 | 14.309 | 14.920 | 18.058~19.618 |
+| Redis miss | 15.845 | 16.955 | 16.049 | 18.896~21.081 |
+| Redis hit | 10.786 | 9.242 | 10.932 | 10.382~14.981 |
+
+miss는 전용 Redis 제어 연결로 자신의 키를 DEL한 뒤 GET했다. DEL은 GET 시간 밖이며 실제 좋아요 쓰기 비용과 분리한다. hit는 미리 채운 뒤 변경 없이 반복했다. 각 모드의 시간 측정 후 대표 요청 SQL을 수집해 source 경로/ID 경로를 확인했다. 매 시간 표본의 hit 로그를 남긴 것은 아니다.
+
+### SQL·캐시 값
+
+정상 비어 있지 않은 로그인 요청의 업무 SELECT는 브랜드·상품·카운터·사용자·개인 관계의 5개다. 대표 9개 요청에서 상품 총수 COUNT는 0번이었다. DB-only/miss의 상품/카운터 실제 rows는 각각 990, hit는 각각 20이었다. 개인 관계는 모두 페이지 ID 20개로 조회했다. 전체 순위 선택은 원본 경로의 Java comparator이고 hit는 ID 순서를 유지하며 페이지 정보만 다시 합성한다. DB 실행 계획의 Sort 유무만으로 전체 정렬 비용을 판단하지 않는다.
+
+Redis 값은 ids 한 필드, 상품 ID 20개·128바이트였다. 이름·가격·좋아요 수·isLiked를 저장하지 않는다. SET+TTL 300초이며 hit로 만료를 연장하지 않는다. 표시 변경 시에는 ID 순위를 재사용하고 현재 상품 정보를 DB에서 읽는다.
+
+### 실제 좋아요 변경의 응답·비용
+
+seed에서 사용자 95가 좋아요하지 않은 페이지 밖 상품 307에 POST(201)/DELETE(204)를 번갈아 실행했다. 좋아요 하나로 이 상품이 페이지에 진입하며 취소 후 원래 목록이 된다. 각 패턴의 워밍업 100 GET/측정 200 GET 동안 전 응답을 base/changed_response와 비교했다. DB-only와 Redis 모두 동일하게 수행했다.
+
+| 조건 | 캐시 없음 GET 중앙값(ms) | Redis GET 중앙값(ms) |
+| --- | ---: | ---: |
+| 변경 1회 / GET 10회 | 13.544~14.178 | 8.380~8.616 |
+| 매 GET 전 변경 | 12.029~12.806 | 13.467~14.005 |
+
+| 조건 | 캐시 없음 변경 API 중앙값(ms) | Redis 변경 API 중앙값(ms) |
+| --- | ---: | ---: |
+| 변경 1회 / GET 10회 | 8.437~8.639 | 8.004~8.928 |
+| 매 GET 전 변경 | 6.418~6.790 | 7.476~7.859 |
+
+변경 시간은 POST와 DELETE를 합친 표본의 API 전체 시간이다. 사용자/상품 확인·관계/카운터 변경·commit·해당 모드의 DEL·응답을 포함하며 순수 Redis DEL 비용으로 빼서 해석하지 않는다. 취소는 실제 변경된 경우 브랜드 ID 확인 조회도 수행한다. 각 반복의 변경 표본은 1:10 패턴 20개, 1:1 패턴 200개다. p95와 원시 표본은 원본에 둔다. 실험 패턴으로부터 예상하는 Redis 재사용 비율은 각각 0.9/0이며 운영 hit rate나 개별 GET의 실측 hit 로그가 아니다. 테스트에서 중복 등록·없는 취소는 무효화하지 않는지도 확인했다.
+
+### 20명 동시 조회
+
+Python 스레드 20개를 barrier에서 함께 출발시켰다. 준비용 3묶음 뒤 10묶음×20 GET을 측정하고 각 모드를 세 번 반복했다. 서버 도착/SQL 시작 시점까지 같게 강제하지 않았고 DB 풀 최대는 40이다. 빈 캐시는 묶음 직전 자신의 키를 지운 상태이며 전부 miss임을 뜻하지 않는다.
+
+| 시작 상태 | 세 p95 범위(ms) |
+| --- | ---: |
+| 캐시 없음 | 71.041~89.800 |
+| 시작 시 빈 Redis | 70.405~110.879 |
+| 미리 채운 Redis | 25.326~26.203 |
+
+현재 빌드의 측정 GET 6,000개는 순차 1,800·변경 혼합 2,400·동시 1,800개다. 전 응답이 기대값과 같았고 동시 오류는 0이었다. 실제 측정 변경 API는 1,320회다. 이전 기준선 GET 600회는 별도 기록이다. 변경 혼합이 끝난 실험 DB의 관계/카운터 복원, 원본 데이터·인덱스·카운터 checksum 보존과 자신이 만든 DB·권한·키·앱 정리를 확인했다.
+
+### 회귀·실패·판단의 범위
+
+전체 검사는 56 suites·326건, 실패/오류/skip 0이다. Checkstyle Main/Test·ArchUnit을 포함한다. 첫 검사에서는 미사용 import 1개로 Checkstyle이 실패했으며 이를 제거하고 실제 취소 여부 반환 검증을 보강한 뒤 전체 check를 완료했다. 새 LikesPageCacheIntegrationTest 15건은 정상/오류/변경/rollback/삭제/사용자 경계/늦은 채움/DEL 실패/실제 Redis 장애와 회복을 포함한다. 기존 가격순·카운터 동시성·주문 회귀도 유지했다.
+
+실패/늦은 채움에서는 현재 좋아요 숫자와 하트가 반영돼도 오래된 ID 순서가 남을 수 있다. 테스트용 100ms 만료 뒤 재선택을 확인했으며 기본 TTL 300초나 모든 요청에 적용되는 변경 후 시간 상한을 실측했다고 주장하지 않는다. 실제 장애는 새 전용 Redis 컨테이너를 중단했으며 복구 시 자신의 키를 명시적으로 DEL했다. 재연결만으로 최신이라고 하지 않는다.
+
+이 비교는 현재 Java 전체 후보 정렬 경로에 캐시를 붙인 결과다. 다른 DB 정렬 대안·로컬 캐시·Sorted Set과의 우열이나 모든 최악 상황을 검증한 결과는 아니다. 현재 좋아요순의 계약을 완화하는 주기 집계는 별도 정책 결정이 필요하다. [측정 원본](measurements/100k-likes-cache.json), [전체 검사·숫자 대조](measurements/likes-cache-validation.json).
+
+재실행은 현재 JAR를 빌드한 뒤 아래처럼 새 출력 경로로 수행한다. --baseline은 기존 파일에 담긴 구현 전 기준선을 함께 보존하는 입력이며, 현재 DB-only 시간은 새로 측정한다. 다른 벤치마크와 겹치지 않게 실행한다.
+
+```bash
+python3 scripts/compare-week4-likes-cache.py \
+  --jar apps/commerce-api/build/libs/commerce-api-a083b48.jar \
+  --baseline docs/week4/measurements/100k-likes-cache.json \
+  --output docs/week4/measurements/100k-likes-cache-repeat.json
+```
 
 <a id="popular-cache-snapshot"></a>
 
