@@ -11,6 +11,7 @@ import com.loopers.application.product.ProductSort;
 import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.like.LikeService;
 import com.loopers.domain.product.ProductService;
+import com.loopers.domain.product.PopularPageCache;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -180,8 +181,9 @@ class ProductJoinApiExperimentTest {
         @Bean
         @Primary
         ProductQueryService experimentQuery(BrandService brands, ProductService products, LikeService likes,
-            JdbcTemplate jdbc, PricePageReader pricePages, @Qualifier("productQueryService") ProductQueryService split) {
-            return new JoinedQuery(brands, products, likes, jdbc, split, pricePages);
+            JdbcTemplate jdbc, PricePageReader pricePages, PopularPageCache popularPages,
+            @Qualifier("productQueryService") ProductQueryService split) {
+            return new JoinedQuery(brands, products, likes, jdbc, split, pricePages, popularPages);
         }
     }
 
@@ -192,8 +194,8 @@ class ProductJoinApiExperimentTest {
         private final ProductQueryService split;
 
         JoinedQuery(BrandService brands, ProductService products, LikeService likes,
-            JdbcTemplate jdbc, ProductQueryService split, PricePageReader pricePages) {
-            super(brands, products, likes, pricePages);
+            JdbcTemplate jdbc, ProductQueryService split, PricePageReader pricePages, PopularPageCache popularPages) {
+            super(brands, products, likes, pricePages, popularPages, false);
             this.brands = brands;
             this.products = products;
             this.jdbc = jdbc;

@@ -65,7 +65,7 @@ class ProductV1ControllerTest {
     @ParameterizedTest
     @EnumSource(ProductSort.class)
     void returnsProductsWithPageAndSortWithoutTotalCount(ProductSort sort) throws Exception {
-        Long brandId = null;
+        Long brandId = sort == ProductSort.POPULAR ? 2L : null;
         when(productListQueryService.getList(null, brandId, 0, 20, sort)).thenReturn(
             new ProductPage<>(
                 java.util.List.of(new ProductListItemInfo(new CustomerProductInfo(

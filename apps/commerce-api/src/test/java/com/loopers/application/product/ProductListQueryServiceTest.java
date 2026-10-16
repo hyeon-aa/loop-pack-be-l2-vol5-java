@@ -34,8 +34,8 @@ class ProductListQueryServiceTest {
     @ParameterizedTest
     @EnumSource(ProductSort.class)
     void personalizesOnlyTheSelectedPageAndPreservesOrder(ProductSort sort) {
-        int page = 2;
-        int size = 2;
+        int page = sort == ProductSort.POPULAR ? 0 : 2;
+        int size = sort == ProductSort.POPULAR ? 20 : 2;
         when(products.getList(1L, page, size, sort)).thenReturn(new ProductPage<>(List.of(second, first), page, size));
         when(likes.findLikedProductIds(7L, List.of(20L, 10L))).thenReturn(Set.of(10L));
         var result = new ProductListQueryService(products, users, likes).getList(7L, 1L, page, size, sort);

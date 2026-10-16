@@ -5,6 +5,7 @@ import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.like.LikeService;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.domain.product.ProductService;
+import com.loopers.domain.product.PopularPageCache;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -21,6 +22,9 @@ class ProductQueryServiceTest {
 
     @Mock
     private PricePageReader pricePages;
+
+    @Mock
+    private PopularPageCache popularPages;
 
     @Mock
     private BrandService brandService;
@@ -57,7 +61,7 @@ class ProductQueryServiceTest {
         when(likeService.countByProductIds(List.of(1L, 2L))).thenReturn(Map.of(1L, 1L, 2L, 3L));
 
         ProductPage<CustomerProductInfo> result = new ProductQueryService(
-            brandService, productService, likeService, pricePages
+            brandService, productService, likeService, pricePages, popularPages, false
         ).getList(null, 0, 1, ProductSort.LIKES_DESC);
 
         assertThat(result.page()).isZero();

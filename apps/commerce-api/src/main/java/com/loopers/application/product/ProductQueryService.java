@@ -4,12 +4,17 @@ import com.loopers.application.brand.BrandInfo;
 import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.like.LikeService;
+import com.loopers.domain.product.CachedFirstPage;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.domain.product.ProductService;
+import com.loopers.domain.product.PopularPage;
+import com.loopers.domain.product.PopularPageCache;
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.Collection;
 import java.util.Comparator;
@@ -27,13 +32,18 @@ public class ProductQueryService {
     private final ProductService productService;
     private final LikeService likeService;
     private final PricePageReader pricePages;
+    private final PopularPageCache popularPages;
+    private final boolean popularCacheEnabled;
 
     public ProductQueryService(BrandService brandService, ProductService productService, LikeService likeService,
-        PricePageReader pricePages) {
+        PricePageReader pricePages, PopularPageCache popularPages,
+        @Value("${commerce.cache.popular.enabled:false}") boolean popularCacheEnabled) {
         this.brandService = brandService;
         this.productService = productService;
         this.likeService = likeService;
         this.pricePages = pricePages;
+        this.popularPages = popularPages;
+        this.popularCacheEnabled = popularCacheEnabled;
     }
 
     @Transactional(readOnly = true)
@@ -50,6 +60,9 @@ public class ProductQueryService {
         ProductSort sort
     ) {
         validatePage(page, size);
+        if (sort == ProductSort.POPULAR && (brandId == null || !CachedFirstPage.matches(page, size))) {
+            throw new CoreException(ErrorType.BAD_REQUEST, "인기순은 브랜드별 첫 페이지 20개만 조회할 수 있습니다.");
+        }
         BrandModel brand = brandId == null ? null : brandService.get(brandId);
         if (sort == ProductSort.PRICE_ASC) {
             if (brand != null) {
@@ -62,6 +75,22 @@ public class ProductQueryService {
             List<ProductModel> candidates = productService.findActiveByPriceAsc(brandId, page, size);
             return new ProductPage<>(enrich(candidates, brand), page, size);
         }
+        boolean cacheRanking = popularCacheEnabled && sort == ProductSort.POPULAR
+            && TransactionSynchronizationManager.isCurrentTransactionReadOnly();
+        if (cacheRanking) {
+            var cached = popularPages.get(brandId);
+            if (cached.isPresent()) {
+                var ids = cached.get().ids();
+                var byId = ids.isEmpty() ? Map.<Long, ProductModel>of()
+                    : productService.findActiveByIds(ids).stream()
+                        .filter(product -> brandId.equals(product.getBrandId()))
+                        .collect(Collectors.toMap(ProductModel::getId, Function.identity()));
+                if (byId.size() == ids.size()) {
+                    var ordered = ids.stream().map(byId::get).toList();
+                    return new ProductPage<>(enrich(ordered, brand), page, size);
+                }
+            }
+        }
         List<ProductModel> candidates = brandId == null
             ? productService.findAllActive()
             : productService.findActiveByBrandId(brandId);
@@ -69,6 +98,7 @@ public class ProductQueryService {
         int fromIndex = Math.min(page * size, products.size());
         int toIndex = Math.min(fromIndex + size, products.size());
         var selected = products.subList(fromIndex, toIndex);
+        if (cacheRanking) { popularPages.put(brandId, new PopularPage(selected.stream().map(CustomerProductInfo::id).toList())); }
         return new ProductPage<>(selected, page, size);
     }
 
@@ -117,7 +147,7 @@ public class ProductQueryService {
             case PRICE_ASC -> Comparator.comparingLong(CustomerProductInfo::price)
                 .thenComparing(CustomerProductInfo::createdAt, Comparator.reverseOrder())
                 .thenComparing(CustomerProductInfo::id, Comparator.reverseOrder());
-            case LIKES_DESC -> Comparator.comparingLong(CustomerProductInfo::likeCount).reversed()
+            case LIKES_DESC, POPULAR -> Comparator.comparingLong(CustomerProductInfo::likeCount).reversed()
                 .thenComparing(CustomerProductInfo::createdAt, Comparator.reverseOrder())
                 .thenComparing(CustomerProductInfo::id, Comparator.reverseOrder());
         };

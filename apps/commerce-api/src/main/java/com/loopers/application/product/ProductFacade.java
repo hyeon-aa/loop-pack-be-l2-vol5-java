@@ -25,6 +25,7 @@ public class ProductFacade {
         var product = productService.create(brandId, name, price, initialStockQuantity);
         likeService.initializeCount(product.getId());
         events.publishEvent(new PricePageChanged(brandId));
+        events.publishEvent(new PopularPageChanged(brandId));
         return ProductInfo.from(product);
     }
 
@@ -52,5 +53,6 @@ public class ProductFacade {
         Long brandId = productService.getBrandId(id);
         productService.delete(id);
         events.publishEvent(new PricePageChanged(brandId));
+        events.publishEvent(new PopularPageChanged(brandId));
     }
 }

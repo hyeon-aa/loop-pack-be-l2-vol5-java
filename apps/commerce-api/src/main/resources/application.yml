@@ -76,13 +76,18 @@ commerce:
     price:
       enabled: true
       ttl-seconds: 300
+    popular:
+      enabled: true
+      ttl-seconds: 60
 
 ---
 spring.config.activate.on-profile: local
 
 commerce.cache.price.prefix: commerce:price-page:v3:local
+commerce.cache.popular.prefix: commerce:popular-page:v1:local
 
 ---
 spring.config.activate.on-profile: benchmark
 
 commerce.cache.price.prefix: commerce:price-page:v3:benchmark
+commerce.cache.popular.prefix: commerce:popular-page:v1:benchmark

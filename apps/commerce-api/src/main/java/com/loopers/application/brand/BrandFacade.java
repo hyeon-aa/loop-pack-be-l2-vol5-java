@@ -5,6 +5,7 @@ import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.product.ProductRepository;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.application.product.PricePageChanged;
+import com.loopers.application.product.PopularPageChanged;
 import org.springframework.context.ApplicationEventPublisher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -44,5 +45,6 @@ public class BrandFacade {
             productRepository.save(product);
         }
         events.publishEvent(new PricePageChanged(id));
+        events.publishEvent(new PopularPageChanged(id));
     }
 }
