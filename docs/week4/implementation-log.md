@@ -67,6 +67,81 @@ Handler는 일반 SELECT 하나의 같은 연결 직전·직후 차이이며 EXP
 
 고정 쿼리 SQL 파일에 Handler 항목·같은 연결의 전후 차이 계산·측정 한계를 주석으로 추가했다. 직전 단계와 key 1·next 99가 같은 이유는 LIMIT이 반환 수만 줄이고 읽는 후보를 줄이지 않았기 때문이다. 사용자가 저장한 실행 계획 원문은 실행 시 SQL 오류가 나지 않도록 블록 주석으로 감싸 보존했다. 이번 변경은 설명 보강이며 새 측정은 하지 않았다.
 
+## 3. 같은 쿼리 + 가격 정렬용 복합 인덱스
+
+측정 DB에 scripts/sql/week4-product-price-index.sql의 CREATE INDEX·ANALYZE TABLE을 실행했다. 기존 브랜드 인덱스는 유지했다. [직접 확인 SQL](../../scripts/sql/week4-05-price-index.sql), [결과 원본 · fixed-page-price-index.json](measurements/index-results.json).
+
+| 확인                   | 기존 브랜드 인덱스 | 가격 정렬용 복합 인덱스 |
+| ---------------------- | -----------------: | ----------------------: |
+| 상품 접근 실제 rows    |                 99 |                      20 |
+| Sort                   |               있음 |                    없음 |
+| 반환 상품              |                 20 |                      20 |
+| Handler_read_key 증가  |                  1 |                       1 |
+| Handler_read_next 증가 |                 99 |                      19 |
+| 서버 SQL 중앙값        |            0.170ms |                 0.104ms |
+
+측정 SQL은 이전과 정확히 같고 인덱스 힌트 없이 새 인덱스가 선택됐다. 일반 EXPLAIN 예상 rows는 여전히 99이지만 실제 접근은 20행이었다. LIMIT에 도달해 일찍 종료했기 때문이다. 가격 복합 인덱스는 Using filesort가 사라지고 Using index condition만 나타났으며 커버링 조회는 아니다.
+
+준비 10회·측정 30회와 별도 Handler 1회, 총 41회에서 seed 기대 ID·브랜드·이름·가격·생성 시각·순서가 일치했다. 이전 기준선의 20행과 모든 컬럼·순서도 같았다. Handler는 같은 연결에서 일반 SELECT의 전후 차이를 구했고 ANALYZE는 별도 실행했다. key 1은 시작점을 찾는 요청, next 19는 다음 항목을 읽는 요청으로 총 20개를 반환하는 흐름과 맞는다. 기본키 재조회와 실제 페이지 방문 횟수를 이 값으로 세지 않는다.
+
+키 순서 확인용 보조 조회에서는 같은 가격 6,000·같은 생성 시각 안에서 ID 7407 → 4407 → 1407, 그다음 더 이전 생성 시각의 9407 → 6407 → 3407이 나타났다. 이는 실제 행 값으로 정렬 키 순서를 확인한 예시이며 Leaf 물리 페이지를 덤프한 기록은 아니다.
+
+기존 결과와 측정 시점이 다르고 추가 후 통계도 갱신했다. 서버 SQL 소표본의 시간 차이를 API 개선율로 해석하지 않는다. 이번에는 DDL·SQL 실험·문서만 변경했고 모델 선언은 이전에 이미 존재해 코드 수정·회귀 재실행은 없었다. 이름을 인덱스에서 얻는 커버링 비교와 상품 쓰기 비용은 미측정이다.
+
+### 3.1 가격까지만 있는 인덱스와 동점 정렬까지 있는 인덱스
+
+scripts/compare-week4-price-tie-index.py로 임시 `idx_product_brand_price_only(brand_id, deleted_at, price)`를 생성하고 ANALYZE TABLE 후 비교했다. SELECT 컬럼·WHERE·ORDER BY·LIMIT은 동일하고 비교에서만 FORCE INDEX로 후보를 분리했다. 힌트 없는 SQL이 두 후보 중 무엇을 선택하는지도 원본에 따로 기록했다. [확인 SQL](../../scripts/sql/week4-04-price-tie-index.sql), [결과 원본 · price-tie-index.json](measurements/index-results.json).
+
+| 확인                     | 가격까지만 | 생성 시각 DESC·ID DESC 포함 |
+| ------------------------ | ---------: | --------------------------: |
+| 접근 실제 rows           |         99 |                          20 |
+| Sort                     |       있음 |                        없음 |
+| Handler key 증가         |          1 |                           1 |
+| Handler next 증가        |         99 |                          19 |
+| SQL 중앙값               |    0.163ms |                     0.102ms |
+| 인덱스 할당 페이지       |         20 |                          25 |
+| 16KiB 페이지 기준 할당량 |     320KiB |                      400KiB |
+
+동일 세션에서 실행 순서를 교대하며 방식별 준비 10회·측정 30회, 총 80회에서 상품 ID·이름·가격·브랜드·생성 시각·순서가 seed 기대값과 같았다. 별도 Handler 측정의 두 후보 결과도 모든 필드·순서가 같았다. Handler는 일반 SELECT의 전후 차이이며 ANALYZE 실행을 포함하지 않았다.
+
+크기는 mysql.innodb_index_stats의 size 페이지 수와 innodb_page_size로 확인했다. 행의 유효 바이트나 디스크 I/O 수가 아니다. 짧은 인덱스가 작지만 이번 쿼리의 추가 정렬을 제거하지 못했다. 인덱스 열 추가가 정확성에 필수인 것은 아니며 비용 선택의 문제다. 로컬 SQL 시간으로 API 개선율을 주장하지 않는다. 상품 쓰기 성능은 미측정이다.
+
+finally에서 생성한 짧은 후보를 삭제했고 기존 인덱스 이름·컬럼·방향이 유지됐음을 확인했다. 전체 정렬 인덱스는 남아 있고 좋아요 새 인덱스는 여전히 없다. 모델·운영 코드 변경은 없었다.
+
+### 3.2 사용자 변경 상태에서 자동 선택과 가격 후보 강제 사용
+
+현재 상품 인덱스를 먼저 확인했다. 기존 idx_product_brand_deleted와 사용자 생성 idx_product_brand_price_only가 있고 전체 정렬 인덱스는 없었다. 스키마·통계·데이터를 변경하지 않고 자동 선택·가격 후보 강제·브랜드 후보 강제의 계획과 Handler·결과를 비교했다. [원본 · price-only-optimizer-choice.json](measurements/index-results.json).
+
+| 확인                  |                 힌트 없음 |        가격 후보 FORCE INDEX |
+| --------------------- | ------------------------: | ---------------------------: |
+| 선택한 인덱스         | idx_product_brand_deleted | idx_product_brand_price_only |
+| 실제 읽기             |                        99 |                           99 |
+| Sort                  |                      있음 |                         있음 |
+| Handler key·next 증가 |                      1·99 |                         1·99 |
+| SQL 중앙값            |                   0.166ms |                      0.159ms |
+
+자동·가격 강제 비교는 같은 프로파일 세션에서 실행 순서를 교대하고 방식별 준비 10회·측정 30회, 총 80회 모든 반환 컬럼·순서 일치를 확인했다. 별도 브랜드 강제 결과도 같았다. 작은 시간 차이와 표본 범위가 겹쳐 어느 쪽의 고정된 성능 우위로 해석하지 않는다.
+
+실제 상품 SELECT의 optimizer trace를 수집했다. ref 후보 둘은 각각 rows=99·cost=34.65였고 기존 브랜드 인덱스가 chosen=true였다. range 후보 둘도 rows=99·cost=34.91로 표시됐으며 짧은 가격 후보는 chosen=false·cause=cost였다. 새 가격 후보가 예상 비용 우위를 제공하지 않는 점은 확인했지만 동률의 내부 선택 순서까지 확인하지 않았다. 최초 추적 수집은 표시용 SELECT가 상품 쿼리의 trace를 덮어써 유효하지 않았고, 표시 쿼리 없이 재수집한 실제 SELECT trace로 교체했다.
+
+FORCE INDEX는 사용 가능 경로를 지정할 뿐 ORDER BY 전체 순서가 맞도록 인덱스를 바꾸지 않는다. 지금 고정 쿼리에서 짧은 가격 후보의 읽기·정렬 이득은 관찰하지 못했다. 가격 범위 등 다른 쿼리에서의 유용성은 별도 검토다. 사용자 직접 실험 중인 인덱스 구성은 그대로 유지했다.
+
+사용자가 이해한 옵티마이저의 예상 비용 선택과 실제 실행 비교의 차이를 design과 04 SQL에 보강했다. 두 후보의 표시 비용이 같았다는 관찰과 동률 선택 규칙을 확인하지 않았다는 한계를 구분했다. 05 SQL에는 사용자 직접 실험 상태에서 짧은 후보 삭제·전체 정렬 인덱스 재생성 절차를 주석으로 명시했다. 이번 작업은 문서 보강이며 DB 변경·새 측정은 하지 않았다. 사용자의 다음 05 결과는 아직 확인하지 않았다.
+
+### 3.3 MySQL 확장에서 Handler가 key 2·next 118 증가한 원인
+
+사용자가 05 SQL의 일반 SELECT 전후에 관찰한 key 138 → 140·next 692 → 810을 조사했다. 파일의 측정 블록과 확장 실행 이력은 SHOW → SELECT → SHOW였다. 별도 MySQL 클라이언트에서는 SELECT만 실행하면 key 1·next 19 증가였고 SHOW만 반복해도 추가 증가가 없었다. 사용자의 실행 실수로 단정할 수 없었다.
+
+benchmark DB의 general log를 잠깐 켜고 실제 편집기의 상품 조회를 실행했다. 같은 연결에서 원래 LIMIT 20 SELECT 다음에 확장이 `SELECT count(*) count0 FROM (원래 SELECT에서 LIMIT을 제거한 쿼리) temp`를 실행한 것을 확인했다. 화면에도 Total 99가 나타났다. 로그 설정은 원래 값으로 복원했다. [실제 SQL·재현 원본 · handler-extension-probe.json](measurements/index-results.json).
+
+포착한 두 SQL을 한 연결에서 재현하니 key 증가 2·next 증가 118이 정확히 나왔다. 원래 SELECT의 1·19와 COUNT의 1·99가 합쳐진 결과다. 이 118을 원래 상품 페이지 SELECT 하나의 읽기량으로 해석하지 않는다. Handler는 의미가 없는 것이 아니라 측정 구간에 확장의 자동 COUNT가 포함됐던 것이다.
+
+앞서 사용자에게 다른 쿼리를 직접 실행했을 가능성을 제시했지만 실제 원인은 확장의 자동 COUNT였다. 상품 SELECT 하나의 비교에는 확장의 COUNT가 없는 클라이언트/실행기를 쓰며 실제 API의 COUNT 비용은 별도로 포함해 평가한다. 현재 편집기에 저장 충돌 메시지가 있어 조사 중 05 SQL의 사용자 편집 내용은 변경하지 않았다.
+
+05 SQL에 확장의 자동 COUNT와 key 2·next 118 해석, 자동 COUNT 없는 터미널 실행 명령을 추가했다. 별도 week4-05-handler-only.sql을 같은 MySQL 연결에서 실행하도록 분리했다. 해당 명령을 직접 실행해 BEFORE key 0·next 0, AFTER key 1·next 19와 상품 20개를 확인했다. 기존 사용자 실행 계획 원문을 블록 주석으로 보존했다. 인덱스·데이터 변경은 없다.
+
+사용자 요청으로 SQL 번호를 04 가격까지만 있는 후보 → 05 생성 시각·ID 동점 정렬까지 포함하는 순서로 변경했다. 전체 정렬 인덱스의 Handler 전용 파일도 week4-05-handler-only.sql로 변경하고 문서 링크·실행 명령을 갱신했다. 기존 실행 계획·쿼리는 보존했다. 후보 99개를 끝까지 읽는 next 99에는 이후 98개와 끝 확인 요청이 포함됐고, LIMIT으로 멈추는 next 19와 구분한다. 인덱스·데이터·측정값은 변경하지 않았다.
+
 ## 17. 브랜드 중복 조회 제거
 
 `ProductQueryService.getList()`가 `brandService.get(brandId)`로 브랜드를 확인한 뒤, `enrich()` 안에서 `brandService.getAllActiveByIds(...)`로 같은 브랜드를 다시 조회하고 있었다. 9절에서 이미 업무 SELECT 5개를 나열했지만("브랜드 확인·COUNT·상품 페이지·브랜드 정보·좋아요 집계") 그중 "브랜드 확인"과 "브랜드 정보"가 중복이라는 점은 그때 짚지 않았다.
