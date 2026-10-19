@@ -276,7 +276,7 @@ python3 scripts/measure-week4-fixed-product-page.py --output docs/week4/measurem
 
 09는 가격 우선, 10은 브랜드 IN, 11은 삭제 조건, 12는 OFFSET·커서 SQL이다. SQL 파일의 주석과 실행 순서를 확인하고 한 블록씩 실행한다. 11은 복제 테이블 생성·복제 데이터 변경을 포함하며 실제 product에는 쓰지 않는다. 동일 복제 이름이 이미 있으면 임의로 삭제하지 말고 용도를 확인한다. 직접 실험이 끝나면 자신이 만든 복제만 DROP한다.
 
-자동으로 ②~④를 재현하려면 scripts/compare-week4-index-conditions.py를 실행한다. 이미 measurements/index-conditions.json이 있으면 덮어쓰지 않고 중단하므로 재실행할 때는 출력 경로를 변경해 기존 기록을 보존한다. 이 실행기는 복제 테이블을 생성하고 종료 시 정리한다. Handler는 자동 COUNT 없는 클라이언트로 수집한다. 확장에서는 EXPLAIN ANALYZE의 실제 읽기·정렬을 먼저 확인한다.
+자동으로 ②–④를 재현하려면 scripts/compare-week4-index-conditions.py를 실행한다. 이미 measurements/index-conditions.json이 있으면 덮어쓰지 않고 중단하므로 재실행할 때는 출력 경로를 변경해 기존 기록을 보존한다. 이 실행기는 복제 테이블을 생성하고 종료 시 정리한다. Handler는 자동 COUNT 없는 클라이언트로 수집한다. 확장에서는 EXPLAIN ANALYZE의 실제 읽기·정렬을 먼저 확인한다.
 
 ## JOIN 실제 API 실험
 
@@ -296,12 +296,12 @@ JAVA_TOOL_OPTIONS=-Dapi.version=1.44 \
 
 ## Handler 결과 확인
 
-[Handler 검증 결과서](handler-results.md)는 현재 01~14 SQL의 실제 차분을 모은 문서다. 기존 원본을 재사용하고 누락 경로는 scripts/measure-week4-handler-supplement.py로 보완했다. 실행기는 자동 COUNT 없는 한 연결에서 측정하고 실제 업무 SQL을 읽기 전용으로 재실행한다. 이미 measurements/handler-supplement.json이 있으면 덮어쓰지 않는다. 재실행하려면 출력 경로를 새 파일로 바꿔 기존 원본을 보존한다.
+[Handler 검증 결과서](handler-results.md)는 현재 01–14 SQL의 실제 차분을 모은 문서다. 기존 원본을 재사용하고 누락 경로는 scripts/measure-week4-handler-supplement.py로 보완했다. 실행기는 자동 COUNT 없는 한 연결에서 측정하고 실제 업무 SQL을 읽기 전용으로 재실행한다. 이미 measurements/handler-supplement.json이 있으면 덮어쓰지 않는다. 재실행하려면 출력 경로를 새 파일로 바꿔 기존 원본을 보존한다.
 
 
 ## 10만 건 핵심 비교·쓰기·최종 API 재현
 
-이미 준비된 `loopers_benchmark_100k`(상품 100,000·좋아요 628,186)와 `loopers_benchmark_100k_hotspot`(좋아요 678,186)을 사용한다. seed를 다시 넣지 않는다. 15~17의 결과는 implementation-log 12절, 통제 비교는 13절을 참고한다. 한 블록씩 직접 계획을 확인하려면 [18 SQL](../../scripts/sql/week4-18-100k-before-after.sql)을 사용한다. 18은 읽기 경로에서 IGNORE INDEX를 사용한 보조 확인이고, 자동 측정 원본은 실제 인덱스 구성이 다른 복제끼리 비교한 결과다.
+이미 준비된 `loopers_benchmark_100k`(상품 100,000·좋아요 628,186)와 `loopers_benchmark_100k_hotspot`(좋아요 678,186)을 사용한다. seed를 다시 넣지 않는다. 15–17의 결과는 implementation-log 12절, 통제 비교는 13절을 참고한다. 한 블록씩 직접 계획을 확인하려면 [18 SQL](../../scripts/sql/week4-18-100k-before-after.sql)을 사용한다. 18은 읽기 경로에서 IGNORE INDEX를 사용한 보조 확인이고, 자동 측정 원본은 실제 인덱스 구성이 다른 복제끼리 비교한 결과다.
 
 ```bash
 python3 scripts/compare-week4-100k.py \
@@ -340,7 +340,7 @@ PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH \
 
 기존 init script는 실험 소스셋 등록에 재사용한다. JOIN 테스트를 실행하는 명령이 아니다. 결과 `measurements/100k-counter-experiment.json`이 있으면 기존 증거를 보존하도록 중단한다. 재실행하려면 실험 클래스의 출력 파일명을 새 이름으로 지정한다. 일반 `check`에는 실험 소스를 포함하지 않는다. p95는 JDBC 작업 시간으로, 13절의 실제 HTTP p95와 구분한다.
 
-[19 SQL](../../scripts/sql/week4-19-like-counter.sql)은 같은 연결에서 세션 임시 카운터를 만들고 집계·카운터 계획과 초기 값 일치를 확인하는 학습용이다. 원본에 쓰지 않으며 마지막에 임시 테이블을 제거한다. 동시성·쓰기 성능은 위 Java 실험으로 확인한다. SQL 01~18의 파일 상단에 대상 DB·기록 절을 적었고 각 쿼리 위에 확인 목적을 한 줄씩 두었다. 자세한 실행 주의점과 이전 메모는 [구현 기록 14절](implementation-log.md#sql-reading-guide)에 보존했다.
+[19 SQL](../../scripts/sql/week4-19-like-counter.sql)은 같은 연결에서 세션 임시 카운터를 만들고 집계·카운터 계획과 초기 값 일치를 확인하는 학습용이다. 원본에 쓰지 않으며 마지막에 임시 테이블을 제거한다. 동시성·쓰기 성능은 위 Java 실험으로 확인한다. SQL 01–18의 파일 상단에 대상 DB·기록 절을 적었고 각 쿼리 위에 확인 목적을 한 줄씩 두었다. 자세한 실행 주의점과 이전 메모는 [구현 기록 14절](implementation-log.md#sql-reading-guide)에 보존했다.
 
 ## 카운터 비정규화 적용 후 DB 준비
 

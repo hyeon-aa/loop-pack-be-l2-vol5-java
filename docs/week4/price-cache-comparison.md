@@ -108,7 +108,7 @@ python3 scripts/compare-week4-price-cache-providers.py \
   --output docs/week4/measurements/100k-price-cache-providers-personal.json
 ```
 
-JAR는 현재 빌드에 맞춘다. 재실행 시 기존 원본을 덮어쓰지 않도록 새 출력 경로를 쓴다. benchmark MySQL·Redis와 18082~18085 포트가 필요하다. 다른 벤치마크와 겹치지 않게 실행하며 자신이 만든 복제 DB·권한·키·프로세스만 정리한다.
+JAR는 현재 빌드에 맞춘다. 재실행 시 기존 원본을 덮어쓰지 않도록 새 출력 경로를 쓴다. benchmark MySQL·Redis와 18082–18085 포트가 필요하다. 다른 벤치마크와 겹치지 않게 실행하며 자신이 만든 복제 DB·권한·키·프로세스만 정리한다.
 
 | 모드 | 설정 |
 | --- | --- |
@@ -128,8 +128,8 @@ JAR는 현재 빌드에 맞춘다. 재실행 시 기존 원본을 덮어쓰지 �
 
 | 구간 | 중앙값(ms) | p95(ms) |
 | --- | ---: | ---: |
-| Redis GET → 문자열 수신 | 0.541~0.720 | 0.770~2.669 |
-| JSON → 상품 목록 | 0.046~0.061 | 0.078~0.173 |
-| GET 시작 → 변환 완료 | 0.591~0.794 | 0.834~2.780 |
+| Redis GET → 문자열 수신 | 0.541–0.720 | 0.770–2.669 |
+| JSON → 상품 목록 | 0.046–0.061 | 0.078–0.173 |
+| GET 시작 → 변환 완료 | 0.591–0.794 | 0.834–2.780 |
 
-독립 JVM 세 개에서 각각 워밍업 1,000회 뒤 1,000회 측정했다. 범위는 세 반복 통계의 최솟값~최댓값이다. GET에는 클라이언트 대기·통신·Redis 처리·문자열 변환이 포함되므로 순수 네트워크 시간이라고 부르지 않는다. 측정 3,000회가 원본 페이지와 같았다. 별도 실험의 시간을 기존 API 시간에서 빼거나 네트워크가 전체 성능 차이의 원인이라고 단정하지 않는다. [실행·한계](implementation-log.md#redis-read-cost), [원본](measurements/price-cache-redis-read-cost-personal-build.json).
+독립 JVM 세 개에서 각각 워밍업 1,000회 뒤 1,000회 측정했다. 범위는 세 반복 통계의 최솟값–최댓값이다. GET에는 클라이언트 대기·통신·Redis 처리·문자열 변환이 포함되므로 순수 네트워크 시간이라고 부르지 않는다. 측정 3,000회가 원본 페이지와 같았다. 별도 실험의 시간을 기존 API 시간에서 빼거나 네트워크가 전체 성능 차이의 원인이라고 단정하지 않는다. [실행·한계](implementation-log.md#redis-read-cost), [원본](measurements/price-cache-redis-read-cost-personal-build.json).
