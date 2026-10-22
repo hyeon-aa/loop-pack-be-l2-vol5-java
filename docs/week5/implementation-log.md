@@ -31,6 +31,7 @@
 | 25 | test: 배치 복구와 장기 미확인 예약 유지 검증 |
 | 26 | test: PG·DB 장애와 복구 시나리오 검증 |
 | 27 | build: 비교 실험을 별도 테스트 작업으로 분리 |
+| 28 | test: retry와 회로의 적용 순서 비교 |
 
 ## 커밋별 실행 검증
 
@@ -65,5 +66,6 @@
 | 25 | BUILD SUCCESSFUL | 16 | 0 |
 | 26 | BUILD SUCCESSFUL | 5 | 0 |
 | 27 | BUILD SUCCESSFUL | 1 | 0 |
+| 28 | BUILD SUCCESSFUL | 1 | 2 |
 
 각 단계에서 compileTestJava·Checkstyle main/test·ArchUnit을 실행했다. 테스트 수는 해당 단계에서 선택한 테스트 수이며 전체 누적 커버리지 수가 아니다. 비교 실험은 실험 전용 작업으로 실행했다.
