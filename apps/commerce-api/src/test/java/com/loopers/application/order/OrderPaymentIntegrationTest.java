@@ -11,6 +11,7 @@ import com.loopers.domain.payment.PaymentAttempt;
 import com.loopers.domain.payment.PaymentAttemptStatus;
 import com.loopers.domain.payment.PaymentEvent;
 import com.loopers.domain.payment.PaymentProvider;
+import com.loopers.domain.payment.PaymentRequest;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.domain.product.ProductService;
 import com.loopers.domain.user.UserModel;
@@ -203,6 +204,31 @@ class OrderPaymentIntegrationTest {
     }
 
     @Test
+    void mismatchedCreateResponseIsRecordedAsConflictAndRecoveredByProviderOrderId() {
+        Long orderId = draftOf(3);
+        PG.replyNext(202, "{\"transactionKey\":\"TEST-TX-9\",\"orderId\":\"LP-ORD-%010d\","
+            .formatted(orderId) + "\"amount\":9999,\"status\":\"PENDING\"}");
+
+        OrderPaymentInfo payment = orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+
+        assertThat(payment.paymentStatus()).isEqualTo("REQUESTED");
+        assertThat(storedAttempt(orderId).getTransactionKey()).isNull();
+        assertOrder(orderId, OrderStatus.PAYMENT_PENDING, ReservationStatus.RESERVED, 0L);
+        assertThat(stock()).isEqualTo(2);
+        PaymentEvent event = events().getLast();
+        assertThat(event.getSource()).isEqualTo(PaymentEvent.Source.CREATE_RESPONSE);
+        assertThat(event.getResult()).isEqualTo(PaymentAttempt.Result.CONFLICT);
+        assertThat(event.getReason()).isEqualTo(PaymentEvent.Reason.AMOUNT_MISMATCH);
+        assertThat(event.getObservedTransactionKey()).isEqualTo("TEST-TX-9");
+        assertThat(event.getObservedAmount()).isEqualTo(9_999L);
+
+        orderFacade.reconcile(user.getId(), orderId);
+
+        assertThat(PG.requests().getLast().rawQuery()).isEqualTo("orderId=LP-ORD-%010d".formatted(orderId));
+        assertThat(PG.createCalls()).isEqualTo(1);
+    }
+
+    @Test
     void provenRejectionBeforeCreateFailsPaymentAndReleasesStockWithoutTransaction() {
         Long orderId = draftOf(3);
         PG.replyNext(422, "{\"code\":\"TEST_PG_REJECTED_BEFORE_CREATE\",\"orderId\":\"LP-ORD-%010d\","
@@ -346,6 +372,75 @@ class OrderPaymentIntegrationTest {
         assertThat(stock()).isEqualTo(2);
         assertThat(PG.lookupCalls()).isEqualTo(2);
         assertThat(PG.createCalls()).isEqualTo(1);
+    }
+
+    @Test
+    void twoTransactionsForOneOrderAreRecordedAsConflictWithoutChoosingOne() {
+        Long orderId = draftOf(3);
+        PG.dropNextCreateResponse();
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        paymentProvider.create(new PaymentRequest(
+            "LP-ORD-%010d".formatted(orderId), "TEST", "0000-0000-0000-0000", 3_000L));
+        PG.changeStatus("TEST-TX-1", "SUCCESS");
+
+        OrderPaymentInfo payment = orderFacade.reconcile(user.getId(), orderId);
+
+        assertThat(payment.paymentStatus()).isEqualTo("UNKNOWN");
+        assertOrder(orderId, OrderStatus.PAYMENT_PENDING, ReservationStatus.RESERVED, 0L);
+        assertThat(stock()).isEqualTo(2);
+        PaymentEvent last = events().getLast();
+        assertThat(last.getResult()).isEqualTo(PaymentAttempt.Result.CONFLICT);
+        assertThat(last.getReason()).isEqualTo(PaymentEvent.Reason.MULTIPLE_TRANSACTIONS);
+    }
+
+    @Test
+    void oppositeFinalResultIsRecordedAsConflictAndDoesNotReleaseSoldStock() {
+        Long orderId = draftOf(3);
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        PG.changeStatus("TEST-TX-1", "SUCCESS");
+        orderFacade.reconcile(user.getId(), orderId);
+        PG.changeStatus("TEST-TX-1", "FAILED");
+
+        paymentTransactions.applyLookup(orderId, paymentProvider.findByTransactionKey("TEST-TX-1"), PaymentEvent.Source.RECONCILE);
+
+        assertOrder(orderId, OrderStatus.CONFIRMED, ReservationStatus.CONSUMED, 3_000L);
+        assertThat(stock()).isEqualTo(2);
+        PaymentEvent last = events().getLast();
+        assertThat(last.getResult()).isEqualTo(PaymentAttempt.Result.CONFLICT);
+        assertThat(last.getReason()).isEqualTo(PaymentEvent.Reason.OPPOSITE_FINAL_RESULT);
+        assertThat(last.getObservedStatus()).hasToString("FAILED");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "true, 3000, TEST-TX-1, ORDER_MISMATCH",
+        "false, 9999, TEST-TX-1, AMOUNT_MISMATCH",
+        "false, 3000, TEST-TX-9, OTHER_TRANSACTION_KEY"
+    })
+    void mismatchedLookupIsRecordedWithoutChangingPaymentOrStock(
+        boolean otherOrder, long observedAmount, String observedKey, PaymentEvent.Reason reason
+    ) {
+        Long orderId = draftOf(3);
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        String observedOrder = otherOrder ? "OTHER-ORDER" : "LP-ORD-%010d".formatted(orderId);
+        PG.replyNext(200, "{\"transactionKey\":\"%s\",\"orderId\":\"%s\",\"amount\":%d,\"status\":\"SUCCESS\"}"
+            .formatted(observedKey, observedOrder, observedAmount));
+
+        OrderPaymentInfo payment = orderFacade.reconcile(user.getId(), orderId);
+
+        assertThat(payment.paymentStatus()).isEqualTo("PENDING");
+        assertOrder(orderId, OrderStatus.PAYMENT_PENDING, ReservationStatus.RESERVED, 0L);
+        assertThat(storedAttempt(orderId).getTransactionKey()).isEqualTo("TEST-TX-1");
+        assertThat(stock()).isEqualTo(2);
+        PaymentEvent event = events().getLast();
+        assertThat(event.getSource()).isEqualTo(PaymentEvent.Source.RECONCILE);
+        assertThat(event.getResult()).isEqualTo(PaymentAttempt.Result.CONFLICT);
+        assertThat(event.getReason()).isEqualTo(reason);
+        assertThat(event.getObservedTransactionKey()).isEqualTo(observedKey);
+        assertThat(event.getObservedAmount()).isEqualTo(observedAmount);
+        assertThat(PG.createCalls()).isEqualTo(1);
+        assertThat(PG.lookupCalls()).isEqualTo(1);
+        assertThat(points()).isEqualTo(10_000L);
     }
 
     @Test
