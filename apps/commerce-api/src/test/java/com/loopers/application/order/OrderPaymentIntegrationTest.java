@@ -229,6 +229,34 @@ class OrderPaymentIntegrationTest {
     }
 
     @Test
+    void verifiedFailureReleasesStockOfProductDeletedAfterReservation() {
+        Long orderId = draftOf(3);
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        productService.delete(product.getId());
+        PG.changeStatus("TEST-TX-1", "FAILED");
+
+        OrderPaymentInfo payment = orderFacade.reconcile(user.getId(), orderId);
+
+        assertThat(payment.paymentStatus()).isEqualTo("FAILED");
+        assertOrder(orderId, OrderStatus.PAYMENT_FAILED, ReservationStatus.RELEASED, 0L);
+        assertThat(stock()).isEqualTo(5);
+        assertThat(productService.findActive(product.getId())).isEmpty();
+    }
+
+    @Test
+    void verifiedSuccessConfirmsOrderOfProductDeletedAfterReservation() {
+        Long orderId = draftOf(3);
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        productService.delete(product.getId());
+        PG.changeStatus("TEST-TX-1", "SUCCESS");
+
+        orderFacade.reconcile(user.getId(), orderId);
+
+        assertOrder(orderId, OrderStatus.CONFIRMED, ReservationStatus.CONSUMED, 3_000L);
+        assertThat(stock()).isEqualTo(2);
+    }
+
+    @Test
     void provenRejectionBeforeCreateFailsPaymentAndReleasesStockWithoutTransaction() {
         Long orderId = draftOf(3);
         PG.replyNext(422, "{\"code\":\"TEST_PG_REJECTED_BEFORE_CREATE\",\"orderId\":\"LP-ORD-%010d\","
@@ -443,6 +471,63 @@ class OrderPaymentIntegrationTest {
         assertThat(points()).isEqualTo(10_000L);
     }
 
+    @ParameterizedTest
+    @CsvSource({
+        "SUCCESS, CONFIRMED, CONSUMED, 10, 3000",
+        "FAILED, PAYMENT_FAILED, RELEASED, 13, 0"
+    })
+    void paymentResultPreservesStockChangedAfterReservation(
+        String paymentStatus, OrderStatus orderStatus, ReservationStatus reservation, int expectedStock, long paidAmount
+    ) {
+        Long orderId = draftOf(3);
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        productService.changeStock(product.getId(), 10);
+        PG.changeStatus("TEST-TX-1", paymentStatus);
+
+        orderFacade.reconcile(user.getId(), orderId);
+        orderFacade.reconcile(user.getId(), orderId);
+
+        assertOrder(orderId, orderStatus, reservation, paidAmount);
+        assertThat(stock()).isEqualTo(expectedStock);
+        assertThat(storedAttempt(orderId).getStatus().name()).isEqualTo(paymentStatus);
+        assertThat(PG.lookupCalls()).isEqualTo(1);
+        assertThat(PG.createCalls()).isEqualTo(1);
+        assertThat(points()).isEqualTo(10_000L);
+    }
+
+    @Test
+    void insufficientStockRollsBackWithoutCallingPg() {
+        Long orderId = draftOf(6);
+
+        assertThatThrownBy(() -> orderFacade.confirm(user.getId(), orderId, command("attempt-abc")))
+            .isInstanceOf(CoreException.class);
+
+        assertThat(storedOrder(orderId).getStatus()).isEqualTo(OrderStatus.DRAFT);
+        assertThat(storedOrder(orderId).getPaymentMethod()).isNull();
+        assertThat(paymentAttemptJpaRepository.findByOrderId(orderId)).isEmpty();
+        assertThat(stock()).isEqualTo(5);
+        assertThat(PG.createCalls()).isZero();
+    }
+
+    @Test
+    void insufficientLaterItemRollsBackEarlierReservationWithoutCallingPg() {
+        ProductModel scarce = productJpaRepository.save(new ProductModel(product.getBrandId(), "모자", 2_000L, 1));
+        Long orderId = orderFacade.create(user.getId(), List.of(
+            new OrderFacade.OrderLine(product.getId(), 3), new OrderFacade.OrderLine(scarce.getId(), 2)
+        )).id();
+
+        assertThatThrownBy(() -> orderFacade.confirm(user.getId(), orderId, command("attempt-abc")))
+            .isInstanceOf(CoreException.class);
+
+        assertOrder(orderId, OrderStatus.DRAFT, null, 0L);
+        assertThat(storedOrder(orderId).getPaymentMethod()).isNull();
+        assertThat(stock()).isEqualTo(5);
+        assertThat(productJpaRepository.findById(scarce.getId()).orElseThrow().getStockQuantity()).isEqualTo(1);
+        assertThat(paymentAttemptJpaRepository.findByOrderId(orderId)).isEmpty();
+        assertThat(events()).isEmpty();
+        assertThat(PG.createCalls()).isZero();
+    }
+
     @Test
     void sameKeyReturnsStoredStateAndOtherKeysAreRejectedWithoutAnotherCreate() {
         Long orderId = draftOf(3);
@@ -609,6 +694,24 @@ class OrderPaymentIntegrationTest {
         assertThat(paymentAttemptJpaRepository.count()).isEqualTo(1);
         assertOrder(orderId, OrderStatus.PAYMENT_PENDING, ReservationStatus.RESERVED, 0L);
         assertThat(stock()).isEqualTo(2);
+    }
+
+    @Test
+    void adminStockChangeRacingWithFailureReleaseKeepsBothChanges() throws Exception {
+        for (int round = 0; round < 5; round++) {
+            Long orderId = draftOf(3);
+            orderFacade.confirm(user.getId(), orderId, command("attempt-" + round));
+            PG.changeStatus("TEST-TX-" + (round + 1), "FAILED");
+
+            runTogether(List.<Callable<Object>>of(
+                () -> productService.changeStock(product.getId(), 10),
+                () -> orderFacade.reconcile(user.getId(), orderId)));
+
+            // 관리자 변경이 먼저면 10에 반환 3을 더한 13, 반환이 먼저면 관리자가 정한 10. 어느 쪽 변경도 사라지지 않는다.
+            assertThat(stock()).isIn(10, 13);
+            assertOrder(orderId, OrderStatus.PAYMENT_FAILED, ReservationStatus.RELEASED, 0L);
+            productService.changeStock(product.getId(), 5);
+        }
     }
 
     private <T> List<T> runTogether(List<Callable<T>> calls) throws Exception {

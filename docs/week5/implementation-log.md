@@ -21,6 +21,7 @@
 | 15 | test: 주문 결제 성공·실패·응답 유실 검증 |
 | 16 | test: 결제 요청 중복과 카드 변경 충돌 검증 |
 | 17 | test: PG 결과 불일치와 상충하는 거래 검증 |
+| 18 | test: 예약 재고 반환과 관리자 변경 정합성 검증 |
 
 ## 커밋별 실행 검증
 
@@ -45,5 +46,6 @@
 | 15 | BUILD SUCCESSFUL | 13 | 0 |
 | 16 | BUILD SUCCESSFUL | 29 | 0 |
 | 17 | BUILD SUCCESSFUL | 35 | 0 |
+| 18 | BUILD SUCCESSFUL | 42 | 0 |
 
 각 단계에서 compileTestJava·Checkstyle main/test·ArchUnit을 실행했다. 테스트 수는 해당 단계에서 선택한 테스트 수이며 전체 누적 커버리지 수가 아니다. 비교 실험은 실험 전용 작업으로 실행했다.
