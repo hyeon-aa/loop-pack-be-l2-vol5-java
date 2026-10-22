@@ -1,7 +1,5 @@
 # ADR 0032: 검증한 결제 결과를 TX B에 저장하고 TX C에서 주문·예약·재고에 반영한다
 
-> 현재 결정의 구현을 커밋별로 반영 중이다. 검증란은 분할 전 전체 작업 폴더에서 확인한 이력이며, 관련 테스트는 후속 test 커밋에서 추가한다. 현재 포함 범위는 [설계](../week5/design.md)와 [구현 기록](../week5/implementation-log.md)을 따른다.
-
 Status: Accepted
 Related: [ADR 0029](0029-order-payment-switches-to-pg-with-reservation-on-order.md), [ADR 0030](0030-pg-payment-split-transactions-and-apply-once.md), [ADR 0031](0031-pg-lookup-retry-circuit-breaker-and-fallback.md)
 

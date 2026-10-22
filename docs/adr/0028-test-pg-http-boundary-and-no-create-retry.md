@@ -1,7 +1,5 @@
 # ADR 0028: 테스트 PG 호출은 adapter로 격리하고 생성을 자동 재시도하지 않는다
 
-> 현재 결정의 구현을 커밋별로 반영 중이다. 검증란은 분할 전 전체 작업 폴더에서 확인한 이력이며, 관련 테스트는 후속 test 커밋에서 추가한다. 현재 포함 범위는 [설계](../week5/design.md)와 [구현 기록](../week5/implementation-log.md)을 따른다.
-
 Status: Accepted
 Date: 2026-10-18
 

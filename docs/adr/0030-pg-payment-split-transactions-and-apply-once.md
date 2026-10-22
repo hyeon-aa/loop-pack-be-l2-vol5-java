@@ -1,7 +1,5 @@
 # ADR 0030: PG 결제를 TX A·PG 호출·TX B로 나누고 결과를 결제 시도 전이와 이력으로 한 번만 반영한다
 
-> 현재 결정의 구현을 커밋별로 반영 중이다. 검증란은 분할 전 전체 작업 폴더에서 확인한 이력이며, 관련 테스트는 후속 test 커밋에서 추가한다. 현재 포함 범위는 [설계](../week5/design.md)와 [구현 기록](../week5/implementation-log.md)을 따른다.
-
 Status: Accepted — 결과 저장·주문 반영 경계는 [ADR 0032](0032-persist-payment-result-before-order-application.md)로 변경
 Related: [ADR 0010](0010-point-balance-locks-before-ledger-read.md), [ADR 0011](0011-order-confirmation-locks-order-row.md), [ADR 0012](0012-stock-decrement-locks-product-row.md), [ADR 0028](0028-test-pg-http-boundary-and-no-create-retry.md), [ADR 0029](0029-order-payment-switches-to-pg-with-reservation-on-order.md)
 

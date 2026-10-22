@@ -1,7 +1,5 @@
 # ADR 0033: 10분이 지난 미완료 결제 시도는 배치가 reconcile과 같은 규칙으로 마무리한다
 
-> 현재 결정의 구현을 커밋별로 반영 중이다. 검증란은 분할 전 전체 작업 폴더에서 확인한 이력이며, 관련 테스트는 후속 test 커밋에서 추가한다. 현재 포함 범위는 [설계](../week5/design.md)와 [구현 기록](../week5/implementation-log.md)을 따른다.
-
 Status: Accepted. 확실한 미발송의 즉시 실패와 조회 0건 유지의 근거는 [ADR 0034](0034-close-only-proven-unsent-payments-and-keep-unresolved-pending.md)에 둔다.
 Related: [ADR 0028](0028-test-pg-http-boundary-and-no-create-retry.md), [ADR 0031](0031-pg-lookup-retry-circuit-breaker-and-fallback.md), [ADR 0032](0032-persist-payment-result-before-order-application.md)
 

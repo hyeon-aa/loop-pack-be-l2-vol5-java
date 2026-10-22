@@ -1,7 +1,5 @@
 # ADR 0034: 확실한 미발송만 실패로 닫고, 오래 조회되지 않는 결제는 미완료로 유지한다
 
-> 현재 결정의 구현을 커밋별로 반영 중이다. 검증란은 분할 전 전체 작업 폴더에서 확인한 이력이며, 관련 테스트는 후속 test 커밋에서 추가한다. 현재 포함 범위는 [설계](../week5/design.md)와 [구현 기록](../week5/implementation-log.md)을 따른다.
-
 Status: Accepted
 Related: [ADR 0028](0028-test-pg-http-boundary-and-no-create-retry.md), [ADR 0030](0030-pg-payment-split-transactions-and-apply-once.md), [ADR 0033](0033-payment-recovery-batch-for-unfinished-attempts.md)
 
