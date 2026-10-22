@@ -13,6 +13,7 @@
 | 7 | feat: 테스트 PG HTTP 어댑터 구현 |
 | 8 | feat: PG 조회 재시도·회로·fallback 구현 |
 | 9 | feat: PG 제공자 빈과 조회 정책 설정 연결 |
+| 10 | test: PG 생성·조회 HTTP 계약 검증 |
 
 ## 커밋별 실행 검증
 
@@ -29,5 +30,6 @@
 | 07 | BUILD SUCCESSFUL | 1 | 0 |
 | 08 | BUILD SUCCESSFUL | 1 | 0 |
 | 09 | BUILD SUCCESSFUL | 1 | 0 |
+| 10 | BUILD SUCCESSFUL | 32 | 0 |
 
 각 단계에서 compileTestJava·Checkstyle main/test·ArchUnit을 실행했다. 테스트 수는 해당 단계에서 선택한 테스트 수이며 전체 누적 커버리지 수가 아니다. 비교 실험은 실험 전용 작업으로 실행했다.
