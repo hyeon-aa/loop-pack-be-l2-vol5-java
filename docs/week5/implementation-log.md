@@ -36,6 +36,7 @@
 | 30 | test: 회로 창 크기와 최소 표본 비교 |
 | 31 | test: 실패율 기준과 창 방식 비교 |
 | 32 | test: 조회 timeout과 재시도 예산 상호작용 비교 |
+| 33 | test: 동시 조회의 HTTP 연결 풀 경쟁 확인 |
 
 ## 커밋별 실행 검증
 
@@ -75,5 +76,6 @@
 | 30 | BUILD SUCCESSFUL | 1 | 4 |
 | 31 | BUILD SUCCESSFUL | 1 | 12 |
 | 32 | BUILD SUCCESSFUL | 1 | 8 |
+| 33 | BUILD SUCCESSFUL | 1 | 3 |
 
 각 단계에서 compileTestJava·Checkstyle main/test·ArchUnit을 실행했다. 테스트 수는 해당 단계에서 선택한 테스트 수이며 전체 누적 커버리지 수가 아니다. 비교 실험은 실험 전용 작업으로 실행했다.
