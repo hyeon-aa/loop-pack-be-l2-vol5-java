@@ -10,6 +10,7 @@
 | 4 | feat: 결제 시도와 관찰 이력 저장 구현 |
 | 5 | test: 결제 시도 저장과 유일 제약 검증 |
 | 6 | test: 장애를 제어할 수 있는 가짜 PG 서버 추가 |
+| 7 | feat: 테스트 PG HTTP 어댑터 구현 |
 
 ## 커밋별 실행 검증
 
@@ -23,5 +24,6 @@
 | 04 | BUILD SUCCESSFUL | 1 | 0 |
 | 05 | BUILD SUCCESSFUL | 4 | 0 |
 | 06 | BUILD SUCCESSFUL | 2 | 0 |
+| 07 | BUILD SUCCESSFUL | 1 | 0 |
 
 각 단계에서 compileTestJava·Checkstyle main/test·ArchUnit을 실행했다. 테스트 수는 해당 단계에서 선택한 테스트 수이며 전체 누적 커버리지 수가 아니다. 비교 실험은 실험 전용 작업으로 실행했다.
