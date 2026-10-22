@@ -21,12 +21,17 @@ import com.loopers.infrastructure.payment.PaymentEventJpaRepository;
 import com.loopers.infrastructure.payment.ResilientPaymentProvider;
 import com.loopers.infrastructure.point.PointBalanceJpaRepository;
 import com.loopers.infrastructure.product.ProductJpaRepository;
+import com.loopers.support.error.CoreException;
+import com.loopers.support.error.ErrorType;
 import com.loopers.support.payment.FakePaymentServer;
 import com.loopers.utils.DatabaseCleanUp;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -344,6 +349,142 @@ class OrderPaymentIntegrationTest {
     }
 
     @Test
+    void sameKeyReturnsStoredStateAndOtherKeysAreRejectedWithoutAnotherCreate() {
+        Long orderId = draftOf(3);
+        Long otherOrderId = draftOf(1);
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+
+        OrderPaymentInfo repeated = orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+
+        assertThat(repeated.paymentStatus()).isEqualTo("PENDING");
+        assertThat(repeated.checked()).isFalse();
+        assertThatThrownBy(() -> orderFacade.confirm(user.getId(), orderId, command("attempt-xyz")))
+            .isInstanceOf(CoreException.class);
+        assertThatThrownBy(() -> orderFacade.confirm(user.getId(), otherOrderId, command("attempt-abc")))
+            .isInstanceOf(CoreException.class);
+        assertThat(PG.createCalls()).isEqualTo(1);
+        assertThat(stock()).isEqualTo(2);
+        assertThat(storedOrder(otherOrderId).getStatus()).isEqualTo(OrderStatus.DRAFT);
+    }
+
+    @Test
+    void sameKeyAfterLostCreateResponseReturnsUnknownWithoutCheckingAgain() {
+        Long orderId = draftOf(3);
+        PG.dropNextCreateResponse();
+        OrderPaymentInfo first = orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        assertThat(first.checked()).isFalse();
+        int eventsBefore = events().size();
+        PG.changeStatus("TEST-TX-1", "SUCCESS");
+
+        OrderPaymentInfo repeated = orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+
+        assertThat(repeated.paymentStatus()).isEqualTo("UNKNOWN");
+        assertThat(repeated.checked()).isFalse();
+        assertOrder(orderId, OrderStatus.PAYMENT_PENDING, ReservationStatus.RESERVED, 0L);
+        assertThat(stock()).isEqualTo(2);
+        assertThat(PG.createCalls()).isEqualTo(1);
+        assertThat(PG.lookupCalls()).isZero();
+        assertThat(PG.transactionCount()).isEqualTo(1);
+        assertThat(events()).hasSize(eventsBefore);
+    }
+
+    @Test
+    void sameKeyAfterCompletionReturnsTheStoredFinalResultWithoutCheckingAgain() {
+        Long orderId = draftOf(3);
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        PG.changeStatus("TEST-TX-1", "SUCCESS");
+        orderFacade.reconcile(user.getId(), orderId);
+        int eventsBefore = events().size();
+
+        OrderPaymentInfo repeated = orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+
+        assertThat(repeated.paymentStatus()).isEqualTo("SUCCESS");
+        assertThat(repeated.checked()).isTrue();
+        assertOrder(orderId, OrderStatus.CONFIRMED, ReservationStatus.CONSUMED, 3_000L);
+        assertThat(stock()).isEqualTo(2);
+        assertThat(PG.createCalls()).isEqualTo(1);
+        assertThat(PG.lookupCalls()).isEqualTo(1);
+        assertThat(events()).hasSize(eventsBefore);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "REQUESTED, TEST, 1111-1111-1111-1111",
+        "REQUESTED, OTHER, 0000-0000-0000-0000",
+        "PENDING, TEST, 1111-1111-1111-1111",
+        "PENDING, OTHER, 0000-0000-0000-0000",
+        "UNKNOWN, TEST, 1111-1111-1111-1111",
+        "UNKNOWN, OTHER, 0000-0000-0000-0000",
+        "SUCCESS, TEST, 1111-1111-1111-1111",
+        "SUCCESS, OTHER, 0000-0000-0000-0000",
+        "FAILED, TEST, 1111-1111-1111-1111",
+        "FAILED, OTHER, 0000-0000-0000-0000"
+    })
+    void sameKeyWithDifferentCardConflictsWithoutChangingPaymentOrStock(
+        String paymentStatus, String cardType, String cardNo
+    ) {
+        Long orderId = draftOf(3);
+        if (paymentStatus.equals("REQUESTED")) {
+            paymentTransactions.start(user.getId(), orderId, "attempt-abc", "TEST", "0000-0000-0000-0000");
+        } else {
+            if (paymentStatus.equals("UNKNOWN")) {
+                PG.dropNextCreateResponse();
+            }
+            orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+            if (paymentStatus.equals("SUCCESS") || paymentStatus.equals("FAILED")) {
+                PG.changeStatus("TEST-TX-1", paymentStatus);
+                orderFacade.reconcile(user.getId(), orderId);
+            }
+        }
+        OrderModel orderBefore = storedOrder(orderId);
+        int stockBefore = stock();
+        int eventsBefore = events().size();
+        int createsBefore = PG.createCalls();
+        int lookupsBefore = PG.lookupCalls();
+        int transactionsBefore = PG.transactionCount();
+
+        OrderPaymentInfo repeated = orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        assertThat(repeated.paymentStatus()).isEqualTo(paymentStatus);
+
+        assertThatThrownBy(() -> orderFacade.confirm(user.getId(), orderId,
+            new OrderFacade.PaymentCommand("attempt-abc", cardType, cardNo)))
+            .isInstanceOfSatisfying(CoreException.class,
+                exception -> assertThat(exception.getErrorType()).isEqualTo(ErrorType.CONFLICT));
+
+        assertThat(storedAttempt(orderId).getStatus().name()).isEqualTo(paymentStatus);
+        assertOrder(orderId, orderBefore.getStatus(), orderBefore.getReservationStatus(), orderBefore.getPaidAmount());
+        assertThat(stock()).isEqualTo(stockBefore);
+        assertThat(PG.createCalls()).isEqualTo(createsBefore);
+        assertThat(PG.lookupCalls()).isEqualTo(lookupsBefore);
+        assertThat(PG.transactionCount()).isEqualTo(transactionsBefore);
+        assertThat(events()).hasSize(eventsBefore);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"SUCCESS", "FAILED"})
+    void differentCardCannotTriggerApplicationOfTheStoredFinalResult(String paymentStatus) {
+        Long orderId = draftOf(3);
+        orderFacade.confirm(user.getId(), orderId, command("attempt-abc"));
+        PG.changeStatus("TEST-TX-1", paymentStatus);
+        paymentTransactions.applyLookup(orderId, paymentProvider.findByTransactionKey("TEST-TX-1"),
+            PaymentEvent.Source.RECONCILE);
+        int eventsBefore = events().size();
+
+        assertThatThrownBy(() -> orderFacade.confirm(user.getId(), orderId,
+            new OrderFacade.PaymentCommand("attempt-abc", "TEST", "1111-1111-1111-1111")))
+            .isInstanceOfSatisfying(CoreException.class,
+                exception -> assertThat(exception.getErrorType()).isEqualTo(ErrorType.CONFLICT));
+
+        assertThat(storedAttempt(orderId).getStatus().name()).isEqualTo(paymentStatus);
+        assertOrder(orderId, OrderStatus.PAYMENT_PENDING, ReservationStatus.RESERVED, 0L);
+        assertThat(stock()).isEqualTo(2);
+        assertThat(PG.createCalls()).isEqualTo(1);
+        assertThat(PG.lookupCalls()).isEqualTo(1);
+        assertThat(PG.transactionCount()).isEqualTo(1);
+        assertThat(events()).hasSize(eventsBefore);
+    }
+
+    @Test
     void invalidCardInputIsRejectedBeforeReservingStock() {
         Long orderId = draftOf(3);
 
@@ -354,6 +495,25 @@ class OrderPaymentIntegrationTest {
         assertThat(storedOrder(orderId).getStatus()).isEqualTo(OrderStatus.DRAFT);
         assertThat(stock()).isEqualTo(5);
         assertThat(PG.createCalls()).isZero();
+    }
+
+    @Test
+    void sameKeyConfirmedConcurrentlySendsCreateOnce() throws Exception {
+        Long orderId = draftOf(3);
+        List<Callable<OrderPaymentInfo>> calls = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            calls.add(() -> orderFacade.confirm(user.getId(), orderId, command("attempt-abc")));
+        }
+
+        List<OrderPaymentInfo> results = runTogether(calls);
+
+        assertThat(results).hasSize(8);
+        assertThat(results).filteredOn(OrderPaymentInfo::checked).hasSize(1);
+        assertThat(PG.createCalls()).isEqualTo(1);
+        assertThat(PG.transactionCount()).isEqualTo(1);
+        assertThat(paymentAttemptJpaRepository.count()).isEqualTo(1);
+        assertOrder(orderId, OrderStatus.PAYMENT_PENDING, ReservationStatus.RESERVED, 0L);
+        assertThat(stock()).isEqualTo(2);
     }
 
     private <T> List<T> runTogether(List<Callable<T>> calls) throws Exception {
