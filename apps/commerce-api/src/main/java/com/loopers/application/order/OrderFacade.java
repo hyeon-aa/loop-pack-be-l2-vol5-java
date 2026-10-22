@@ -76,6 +76,11 @@ public class OrderFacade {
         return resolve(paymentTransactions.getMine(userId, orderId), PaymentEvent.Source.RECONCILE);
     }
 
+    /** 배치가 오래된 미완료 시도를 reconcile과 같은 규칙으로 마무리한다. 사용자 확인은 하지 않는다. */
+    public OrderPaymentInfo recover(Long orderId) {
+        return resolve(paymentTransactions.get(orderId), PaymentEvent.Source.BATCH);
+    }
+
     /**
      * PG의 결과 알림. 본문 대신 PG 조회로 TX B에 기록하고 TX C로 주문에 반영한다.
      * 저장된 종결 결과가 있으면 조회 없이 TX C부터 복구한다. 조회 불가면 TX B 없이 UNAVAILABLE이다.
