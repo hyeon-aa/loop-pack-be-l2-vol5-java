@@ -8,6 +8,7 @@
 - PG HTTP 생성·조회, timeout과 생성 재시도 차단
 - 조회만 감싸는 retry·회로·fallback과 다음 시도 시간 예산
 - PG 제공자 빈·HTTP·조회 정책 설정
+- PG 주문 confirm·reconcile, TX A·B·C, 재고 반환과 과거 POINT 주문 보존
 
 결과를 모르면 예약을 유지하고 기존 거래를 조회한다. 생성 POST는 다시 보내지 않는다. 확실한 미발송은 별도로 실패 처리한다.
 
