@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @RequiredArgsConstructor
 @Component
@@ -73,6 +74,25 @@ public class OrderFacade {
      */
     public OrderPaymentInfo reconcile(Long userId, Long orderId) {
         return resolve(paymentTransactions.getMine(userId, orderId), PaymentEvent.Source.RECONCILE);
+    }
+
+    /**
+     * PG의 결과 알림. 본문 대신 PG 조회로 TX B에 기록하고 TX C로 주문에 반영한다.
+     * 저장된 종결 결과가 있으면 조회 없이 TX C부터 복구한다. 조회 불가면 TX B 없이 UNAVAILABLE이다.
+     */
+    public CallbackResult handleCallback(String providerOrderId) {
+        if (providerOrderId == null || providerOrderId.isBlank()) {
+            throw new CoreException(ErrorType.BAD_REQUEST, "PG 주문 번호가 필요합니다.");
+        }
+        Optional<OrderPaymentInfo> found = paymentTransactions.findByProviderOrderId(providerOrderId);
+        if (found.isEmpty()) {
+            return CallbackResult.NOT_OURS;
+        }
+        if (found.get().isFinished()) {
+            return CallbackResult.ALREADY_FINISHED;
+        }
+        return resolve(found.get(), PaymentEvent.Source.CALLBACK).checked()
+            ? CallbackResult.CHECKED : CallbackResult.UNAVAILABLE;
     }
 
     /**
@@ -152,4 +172,6 @@ public class OrderFacade {
         }
     }
 
+    /** callback 처리 결과. UNAVAILABLE만 PG에 처리하지 못했다고 알린다. */
+    public enum CallbackResult { NOT_OURS, ALREADY_FINISHED, CHECKED, UNAVAILABLE }
 }
