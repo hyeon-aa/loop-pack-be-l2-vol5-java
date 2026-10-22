@@ -11,6 +11,7 @@
 - PG 주문 confirm·reconcile, TX A·B·C, 재고 반환과 과거 POINT 주문 보존
 - callback 본문 대신 PG 조회로 결과를 확인하는 API
 - 10분 지난 미완료 결제의 복구 배치
+- 비교 실험 전용 experimentTest 작업
 
 결과를 모르면 예약을 유지하고 기존 거래를 조회한다. 생성 POST는 다시 보내지 않는다. 확실한 미발송은 별도로 실패 처리한다.
 
