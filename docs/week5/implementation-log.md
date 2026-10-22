@@ -8,6 +8,7 @@
 | 2 | test: 주문 예약 상태 전이 검증 |
 | 3 | test: 결제 시도의 종결·중복·충돌 규칙 검증 |
 | 4 | feat: 결제 시도와 관찰 이력 저장 구현 |
+| 5 | test: 결제 시도 저장과 유일 제약 검증 |
 
 ## 커밋별 실행 검증
 
@@ -19,5 +20,6 @@
 | 02 | BUILD SUCCESSFUL | 11 | 0 |
 | 03 | BUILD SUCCESSFUL | 27 | 0 |
 | 04 | BUILD SUCCESSFUL | 1 | 0 |
+| 05 | BUILD SUCCESSFUL | 4 | 0 |
 
 각 단계에서 compileTestJava·Checkstyle main/test·ArchUnit을 실행했다. 테스트 수는 해당 단계에서 선택한 테스트 수이며 전체 누적 커버리지 수가 아니다. 비교 실험은 실험 전용 작업으로 실행했다.
