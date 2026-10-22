@@ -665,6 +665,43 @@ class OrderPaymentIntegrationTest {
     }
 
     @Test
+    void orderLookupsShowPaymentStatusAndAdminAlsoSeesPgIdentifiers() {
+        Long pendingId = draftOf(1);
+        Long unknownId = draftOf(1);
+        Long draftId = draftOf(1);
+        orderFacade.confirm(user.getId(), pendingId, command("attempt-pending"));
+        PG.dropNextCreateResponse();
+        orderFacade.confirm(user.getId(), unknownId, command("attempt-unknown"));
+
+        assertThat(orderFacade.getMyOrder(user.getId(), pendingId).payment().status()).isEqualTo("PENDING");
+        assertThat(orderFacade.getMyOrder(user.getId(), draftId).payment()).isNull();
+        assertThat(orderFacade.getMyOrders(user.getId()))
+            .extracting(OrderInfo::id, order -> order.payment() == null ? null : order.payment().status())
+            .containsExactlyInAnyOrder(tuple(pendingId, "PENDING"), tuple(unknownId, "UNKNOWN"), tuple(draftId, null));
+
+        OrderInfo.PaymentSummary admin = adminOrderFacade.get(pendingId).payment();
+        assertThat(admin.providerOrderId()).isEqualTo("LP-ORD-%010d".formatted(pendingId));
+        assertThat(admin.transactionKey()).isEqualTo("TEST-TX-1");
+        assertThat(adminOrderFacade.getAll()).extracting(OrderInfo::id).contains(pendingId, unknownId, draftId);
+        assertThat(PG.lookupCalls()).isZero();
+    }
+
+    @Test
+    void pastPointOrderCannotStartPgPayment() {
+        Long orderId = draftOf(1);
+        OrderModel pointOrder = storedOrder(orderId);
+        pointOrder.confirm();
+        orderJpaRepository.save(pointOrder);
+
+        assertThatThrownBy(() -> orderFacade.confirm(user.getId(), orderId, command("attempt-abc")))
+            .isInstanceOf(CoreException.class);
+
+        assertThat(storedOrder(orderId).getPaymentMethod()).isEqualTo(PaymentMethod.POINT);
+        assertThat(storedOrder(orderId).getReservationStatus()).isNull();
+        assertThat(PG.createCalls()).isZero();
+    }
+
+    @Test
     void invalidCardInputIsRejectedBeforeReservingStock() {
         Long orderId = draftOf(3);
 
@@ -675,6 +712,35 @@ class OrderPaymentIntegrationTest {
         assertThat(storedOrder(orderId).getStatus()).isEqualTo(OrderStatus.DRAFT);
         assertThat(stock()).isEqualTo(5);
         assertThat(PG.createCalls()).isZero();
+    }
+
+    @Test
+    void pastPointOrderKeepsItsPaymentFactsItemsAndOwnership() {
+        Long orderId = draftOf(2);
+        OrderModel pointOrder = storedOrder(orderId);
+        pointOrder.confirm();
+        orderJpaRepository.save(pointOrder);
+        Long otherUserId = registration.register().getId();
+
+        OrderInfo mine = orderFacade.getMyOrder(user.getId(), orderId);
+
+        assertThat(mine.status()).isEqualTo("CONFIRMED");
+        assertThat(mine.paymentMethod()).isEqualTo("POINT");
+        assertThat(mine.totalAmount()).isEqualTo(2_000L);
+        assertThat(mine.paidAmount()).isEqualTo(2_000L);
+        assertThat(mine.reservationStatus()).isNull();
+        assertThat(mine.payment()).isNull();
+        assertThat(mine.items()).extracting(OrderInfo.OrderItemInfo::productId, OrderInfo.OrderItemInfo::unitPrice,
+            OrderInfo.OrderItemInfo::quantity).containsExactly(tuple(product.getId(), 1_000L, 2));
+        assertThat(orderFacade.getMyOrders(user.getId())).extracting(OrderInfo::id, OrderInfo::paymentMethod)
+            .containsExactly(tuple(orderId, "POINT"));
+        assertThat(adminOrderFacade.get(orderId).paymentMethod()).isEqualTo("POINT");
+        assertThatThrownBy(() -> orderFacade.getMyOrder(otherUserId, orderId)).isInstanceOf(CoreException.class);
+        assertThatThrownBy(() -> orderFacade.reconcile(user.getId(), orderId)).isInstanceOf(CoreException.class);
+        assertThat(orderFacade.getMyOrders(otherUserId)).isEmpty();
+        assertThat(PG.createCalls()).isZero();
+        assertThat(PG.lookupCalls()).isZero();
+        assertThat(points()).isEqualTo(10_000L);
     }
 
     @Test
