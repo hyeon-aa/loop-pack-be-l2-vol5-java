@@ -6,6 +6,7 @@
 | --- | --- |
 | 1 | feat: 주문 예약과 결제 시도 모델 추가 |
 | 2 | test: 주문 예약 상태 전이 검증 |
+| 3 | test: 결제 시도의 종결·중복·충돌 규칙 검증 |
 
 ## 커밋별 실행 검증
 
@@ -15,5 +16,6 @@
 | --- | --- | --- | --- |
 | 01 | BUILD SUCCESSFUL | 1 | 0 |
 | 02 | BUILD SUCCESSFUL | 11 | 0 |
+| 03 | BUILD SUCCESSFUL | 27 | 0 |
 
 각 단계에서 compileTestJava·Checkstyle main/test·ArchUnit을 실행했다. 테스트 수는 해당 단계에서 선택한 테스트 수이며 전체 누적 커버리지 수가 아니다. 비교 실험은 실험 전용 작업으로 실행했다.
