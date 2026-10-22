@@ -24,6 +24,7 @@
 | 18 | test: 예약 재고 반환과 관리자 변경 정합성 검증 |
 | 19 | test: 과거 POINT 주문과 주문 조회 호환성 검증 |
 | 20 | test: 결제 결과 저장과 주문 반영 실패 복구 검증 |
+| 21 | test: 서비스 재생성 뒤 결제 복구 검증 |
 
 ## 커밋별 실행 검증
 
@@ -51,5 +52,6 @@
 | 18 | BUILD SUCCESSFUL | 42 | 0 |
 | 19 | BUILD SUCCESSFUL | 45 | 0 |
 | 20 | BUILD SUCCESSFUL | 11 | 0 |
+| 21 | BUILD SUCCESSFUL | 5 | 0 |
 
 각 단계에서 compileTestJava·Checkstyle main/test·ArchUnit을 실행했다. 테스트 수는 해당 단계에서 선택한 테스트 수이며 전체 누적 커버리지 수가 아니다. 비교 실험은 실험 전용 작업으로 실행했다.
