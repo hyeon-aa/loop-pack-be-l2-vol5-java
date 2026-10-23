@@ -10,6 +10,7 @@ import com.loopers.domain.payment.PaymentRequest;
 import com.loopers.domain.payment.PaymentTransaction;
 import org.apache.hc.client5.http.ConnectTimeoutException;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.core5.http.ConnectionRequestTimeoutException;
 import org.springframework.http.MediaType;
@@ -39,11 +40,17 @@ public class TestPgPaymentAdapter implements PaymentProvider, AutoCloseable {
     /** 조회는 다시 물을 수 있으므로 생성보다 짧게 기다린다. 두 클라이언트는 같은 연결 풀을 쓴다. */
     TestPgPaymentAdapter(String baseUrl, String callbackUrl, Duration connectTimeout, Duration readTimeout,
                          Duration lookupReadTimeout) {
+        this(baseUrl, callbackUrl, connectTimeout, readTimeout, lookupReadTimeout, HttpClients.custom());
+    }
+
+    /** HTTP 처리 규칙은 그대로 두고, 실험에서 연결 풀의 크기와 공유 여부를 정할 수 있다. */
+    TestPgPaymentAdapter(String baseUrl, String callbackUrl, Duration connectTimeout, Duration readTimeout,
+                         Duration lookupReadTimeout, HttpClientBuilder httpClientBuilder) {
         if (!isPositive(connectTimeout) || !isPositive(readTimeout) || !isPositive(lookupReadTimeout)) {
             throw new IllegalArgumentException("PG timeout은 1ms 이상이어야 합니다.");
         }
         this.callbackUrl = callbackUrl;
-        httpClient = HttpClients.custom().disableAutomaticRetries().disableRedirectHandling().build();
+        httpClient = httpClientBuilder.disableAutomaticRetries().disableRedirectHandling().build();
         client = restClient(baseUrl, connectTimeout, readTimeout);
         lookupClient = restClient(baseUrl, connectTimeout, lookupReadTimeout);
     }
