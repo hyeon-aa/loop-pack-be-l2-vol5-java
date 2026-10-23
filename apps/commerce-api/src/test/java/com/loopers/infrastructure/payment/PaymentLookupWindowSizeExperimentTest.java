@@ -20,9 +20,8 @@ import static io.github.resilience4j.circuitbreaker.CircuitBreaker.State;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 회로의 창 크기(최소 표본도 같은 값)만 바꾸어 두 장애를 비교한다.
- * 거래 하나만 계속 실패하면 큰 창이 정상 조회를 덜 막고, 조회 전체가 계속 실패하면 큰 창이 더 늦게 차단한다.
- * 거래 하나만 실패하는 장애는 창 20·최소 표본 4도 비교해, 정상 조회를 덜 막은 것이 어느 설정 덕분인지 확인한다.
+ * 창 4·최소 표본 4, 창 20·최소 표본 20, 창 20·최소 표본 4를 두 장애에서 비교한다.
+ * 거래 하나만 실패할 때 정상 조회가 막히는지, 조회 전체가 실패할 때 몇 번째 GET에서 차단하는지 확인한다.
  * 요청은 하나씩 차례로 보내며, 회로의 OPEN 대기 시간이 지나지 않도록 시계를 멈춘 채 실행한다.
  */
 @Tag("experiment")
@@ -91,10 +90,12 @@ class PaymentLookupWindowSizeExperimentTest {
         assertThat(circuit.getState()).isEqualTo(expectedState);
     }
 
-    @ParameterizedTest(name = "window={0}: opened at customer {1} after {2} GETs")
-    @CsvSource({"4, 2, 4", "20, 7, 20"})
-    void everyLookupFailingIsBlockedLaterWithALargerWindow(int window, int expectedCustomer, int expectedGets) {
-        ResilientPaymentProvider provider = providerWithWindow(window, window);
+    @ParameterizedTest(name = "window={0}, minimumCalls={1}: opened at customer {2} after {3} GETs")
+    @CsvSource({"4, 4, 2, 4", "20, 20, 7, 20", "20, 4, 2, 4"})
+    void everyLookupFailingIsBlockedAfterTheMinimumSamples(
+        int window, int minimumCalls, int expectedCustomer, int expectedGets
+    ) {
+        ResilientPaymentProvider provider = providerWithWindow(window, minimumCalls);
         for (int i = 0; i < MAX_CUSTOMERS * 3; i++) {
             pg.replyNext(503, "");
         }
@@ -106,7 +107,7 @@ class PaymentLookupWindowSizeExperimentTest {
         for (int customer = 1; customer <= MAX_CUSTOMERS; customer++) {
             int before = pg.lookupCalls();
             PaymentObservation result = provider.findByTransactionKey(keys.getFirst());
-            System.out.printf("window-all-failing-trace,%d,customer-%d,%d,%s,%s%n", window, customer,
+            System.out.printf("window-all-failing-trace,%d,%d,customer-%d,%d,%s,%s%n", window, minimumCalls, customer,
                 pg.lookupCalls() - before, result.unknownCause(), provider.lookupCircuitBreaker().getState());
             if (provider.lookupCircuitBreaker().getState() == State.OPEN) {
                 openedAtCustomer = customer;
@@ -123,9 +124,12 @@ class PaymentLookupWindowSizeExperimentTest {
             .isEqualTo(PaymentObservation.unknown(UnknownCause.CIRCUIT_OPEN));
         assertThat(pg.lookupCalls()).isEqualTo(before);
 
-        System.out.printf("window-all-failing,%d,%d,%d,%d%n", window, openedAtCustomer, getsUntilOpen, elapsedUntilOpen);
+        System.out.printf("window-all-failing,%d,%d,%d,%d,%d%n",
+            window, minimumCalls, openedAtCustomer, getsUntilOpen, elapsedUntilOpen);
         assertThat(openedAtCustomer).isEqualTo(expectedCustomer);
         assertThat(getsUntilOpen).isEqualTo(expectedGets);
+        assertThat(provider.lookupCircuitBreaker().getMetrics().getNumberOfFailedCalls()).isEqualTo(expectedGets);
+        assertThat(provider.lookupCircuitBreaker().getMetrics().getFailureRate()).isEqualTo(100.0f);
     }
 
     private ResilientPaymentProvider providerWithWindow(int window, int minimumCalls) {
