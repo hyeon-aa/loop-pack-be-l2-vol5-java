@@ -27,7 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 같은 장애에서 retry와 회로를 감싸는 순서만 바꾸어, 회로가 무엇을 표본으로 세는지 비교한다.
- * 장애: 고객마다 첫 GET은 503, 다시 물으면 정상. 고객 넷이 차례로 확인하면 PG가 받는 GET은 503과 정상이 번갈아 온다.
+ * 장애 1: 고객마다 첫 GET은 503, 다시 물으면 정상. 고객 넷이 차례로 확인하면 PG가 받는 GET은 503과 정상이 번갈아 온다.
+ * 장애 2: 첫 거래만 retry 끝까지 503이고, 뒤의 세 거래는 정상이다.
  * 회로가 바깥인 쪽은 제품 코드가 아니라 이 테스트 안에서만 감싼다. 두 쪽 모두 같은 설정(최대 3회, 창 4, 최소 4, 50%)을 쓴다.
  */
 @Tag("experiment")
@@ -89,6 +90,35 @@ class PaymentLookupWrapOrderExperimentTest {
         assertThat(outcome.successfulSamples()).isEqualTo(4);
     }
 
+    @Test
+    void retryOutsideLetsOneFailingTransactionFillTheWindowAndBlockHealthyLookups() {
+        ResilientPaymentProvider provider = new ResilientPaymentProvider(adapter, SETTINGS, new TestClock());
+
+        Outcome outcome = runOneFailingTransaction("retry-outside", provider::findByTransactionKey,
+            provider.lookupCircuitBreaker());
+
+        assertThat(outcome.verified()).isEqualTo(1);
+        assertThat(outcome.blocked()).isEqualTo(2);
+        assertThat(outcome.gets()).isEqualTo(4);
+        assertThat(outcome.state()).isEqualTo(State.OPEN);
+        assertThat(outcome.failedSamples()).isEqualTo(3);
+        assertThat(outcome.successfulSamples()).isEqualTo(1);
+    }
+
+    @Test
+    void circuitOutsideCountsOneFailingTransactionOnceAndKeepsHealthyLookupsFlowing() {
+        CircuitBreaker circuit = circuitBreaker();
+
+        Outcome outcome = runOneFailingTransaction("circuit-outside", key -> circuitOutside(circuit, key), circuit);
+
+        assertThat(outcome.verified()).isEqualTo(3);
+        assertThat(outcome.blocked()).isZero();
+        assertThat(outcome.gets()).isEqualTo(6);
+        assertThat(outcome.state()).isEqualTo(State.CLOSED);
+        assertThat(outcome.failedSamples()).isEqualTo(1);
+        assertThat(outcome.successfulSamples()).isEqualTo(3);
+    }
+
     private Outcome run(String order, Function<String, PaymentObservation> lookup, CircuitBreaker circuit) {
         int verified = 0;
         int blocked = 0;
@@ -113,6 +143,32 @@ class PaymentLookupWrapOrderExperimentTest {
         Outcome outcome = new Outcome(verified, blocked, pg.lookupCalls(), circuit.getState(),
             circuit.getMetrics().getNumberOfFailedCalls(), circuit.getMetrics().getNumberOfSuccessfulCalls());
         System.out.printf("wrap-order-summary,%s,%d,%d,%d,%s,%d,%d%n", order, outcome.verified(), outcome.blocked(),
+            outcome.gets(), outcome.state(), outcome.failedSamples(), outcome.successfulSamples());
+        return outcome;
+    }
+
+    private Outcome runOneFailingTransaction(String order, Function<String, PaymentObservation> lookup,
+                                             CircuitBreaker circuit) {
+        for (int i = 0; i < SETTINGS.maxAttempts(); i++) {
+            pg.replyNext(503, "");
+        }
+        assertThat(lookup.apply(keys.getFirst())).isEqualTo(PaymentObservation.unknown(UnknownCause.TEMPORARY_FAILURE));
+        pg.clearQueuedFaults();
+
+        int verified = 0;
+        int blocked = 0;
+        for (String key : keys.subList(1, CUSTOMERS)) {
+            PaymentObservation result = lookup.apply(key);
+            if (result.kind() == PaymentObservation.Kind.OBSERVED) {
+                verified++;
+            } else {
+                assertThat(result).isEqualTo(PaymentObservation.unknown(UnknownCause.CIRCUIT_OPEN));
+                blocked++;
+            }
+        }
+        Outcome outcome = new Outcome(verified, blocked, pg.lookupCalls(), circuit.getState(),
+            circuit.getMetrics().getNumberOfFailedCalls(), circuit.getMetrics().getNumberOfSuccessfulCalls());
+        System.out.printf("wrap-order-one-failing,%s,%d,%d,%d,%s,%d,%d%n", order, outcome.verified(), outcome.blocked(),
             outcome.gets(), outcome.state(), outcome.failedSamples(), outcome.successfulSamples());
         return outcome;
     }

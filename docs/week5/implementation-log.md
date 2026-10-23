@@ -27,7 +27,7 @@
 
 **자동 만료 철회 전 전체 검사 이력**: `./gradlew :apps:commerce-api:check --offline` (Java 21, `DOCKER_HOST=tcp://localhost:2375`) → 69 suites·503건, 실패·오류·skip 0. Checkstyle main·test 오류 0과 ArchUnit 포함. 종료 결과 `BUILD SUCCESSFUL`, 4분 10초. 실험 테스트(`@Tag("experiment")`)는 이 검사에서 빠지며, `./gradlew :apps:commerce-api:experimentTest`로 따로 돌려 9 suites·41건 통과([17절](#assumption-experiments)). 자동 만료 철회 뒤의 검사는 [18절](#close-unsent-and-expired)에 별도로 기록한다.
 
-**최신 전체 검사**: 자동 만료를 철회하고 남은 만료 흔적(닫힌 결제 재조회 분기, 만료 이력 사유, 겹치는 테스트)을 정리한 뒤 `./gradlew :apps:commerce-api:check --offline` → 69 suites·503건, 실패·오류·skip 0. Checkstyle main·test 오류 0과 ArchUnit 포함. `BUILD SUCCESSFUL`, 4분 58초. 실험 테스트는 `./gradlew :apps:commerce-api:experimentTest`로 따로 돌려 9 suites·41건 통과.
+**최신 전체 검사**: 자동 만료를 철회하고 남은 만료 흔적(닫힌 결제 재조회 분기, 만료 이력 사유, 겹치는 테스트)을 정리한 뒤 `./gradlew :apps:commerce-api:check --offline` → 69 suites·503건, 실패·오류·skip 0. Checkstyle main·test 오류 0과 ArchUnit 포함. `BUILD SUCCESSFUL`, 4분 58초. 실험 테스트는 `./gradlew :apps:commerce-api:experimentTest`로 따로 돌려 9 suites·43건 통과(감싸는 순서 실험에 "거래 하나만 실패" 장면 2건 추가).
 
 **실행 환경**: Java 21(기본 JDK가 다르면 `JAVA_HOME`을 Java 21로 지정한다. 17로는 `List.getFirst()` 컴파일 오류가 난다), `source ./scripts/fix-docker-testcontainers.sh`로 Docker 연결을 맞춘 뒤 Testcontainers MySQL과 테스트가 띄우는 가짜 PG HTTP 서버를 쓴다.
 
@@ -379,7 +379,7 @@ DB 장면을 위해 이 테스트에서만 JDBC `socketTimeout=3000&connectTimeo
 | --- | --- |
 | `LookupResilienceSettings` | 조회 retry·회로 숫자를 코드 상수에서 `application.yml`의 `lookup-retry.*`·`lookup-circuit.*`로 옮김. 값은 그대로 |
 | `PaymentProviderContractTest` | 설정 바인딩 테스트에 새 키 8개를 추가. 기대값은 그대로 |
-| `PaymentLookupWrapOrderExperimentTest` | 고객마다 첫 GET만 503인 장애에서 감싸는 순서만 비교. retry가 바깥이면 확인 2·막힘 2·GET 4·OPEN, 회로가 바깥이면 확인 4·막힘 0·GET 8·CLOSED. 회로가 바깥인 쪽은 테스트 안에서만 감쌈. 처음에는 회로가 바깥인 쪽에 남은 예산 확인이 빠져 조건이 달랐고, 맞춘 뒤 다시 돌려 같은 결과를 확인 |
+| `PaymentLookupWrapOrderExperimentTest` | 고객마다 첫 GET만 503인 장애에서 감싸는 순서만 비교. retry가 바깥이면 확인 2·막힘 2·GET 4·OPEN, 회로가 바깥이면 확인 4·막힘 0·GET 8·CLOSED. 회로가 바깥인 쪽은 테스트 안에서만 감쌈. 처음에는 회로가 바깥인 쪽에 남은 예산 확인이 빠져 조건이 달랐고, 맞춘 뒤 다시 돌려 같은 결과를 확인. 첫 거래만 retry 끝까지 503이고 뒤 정상 3건인 장애도 두 순서로 실행: retry가 바깥이면 실패 3·성공 1, 정상 1건 확인·2건 막힘·GET 4·OPEN, 회로가 바깥이면 실패 1·성공 3, 정상 3건 확인·막힘 0·GET 6·CLOSED. 처음에는 회로가 바깥인 쪽을 창 계산으로만 적었다가 실행해 같은 결과를 확인 |
 | `PaymentLookupWindowSizeExperimentTest` | 창 4·20(최소 표본 같은 값). 거래 하나만 실패 + 정상 30건: 창 4는 막힘 29·OPEN, 창 20은 막힘 0·CLOSED. 조회 전체 503: 창 4는 2번째 고객·GET 4에서 OPEN, 창 20은 7번째 고객·GET 20에서 OPEN |
 | `PaymentLookupCircuitSettingsExperimentTest` | 실패율 50·80%, 창 최근 4개·최근 10초를 네 장면에서 비교. 실패율 80%는 거래 하나 실패·새벽 장면에서 막힘 0이지만 절반씩 실패하는 PG를 못 알아챔. 시간 창은 새벽 장면만 막힘 0. 셋 다 테스트 안의 같은 조회 장치 |
 | `PaymentLookupTimeoutExperimentTest` | 조회 응답 대기 300·500·800ms × PG 400ms·2초, 연결 빌리기 대기 300·500ms. 300ms는 조금 느린 정상 PG를 막고, 800ms는 고객당 retry가 줄지만 4번째 고객에서 OPEN. 연결 대기 500ms는 확인 5 → 10, 그래도 OPEN |
