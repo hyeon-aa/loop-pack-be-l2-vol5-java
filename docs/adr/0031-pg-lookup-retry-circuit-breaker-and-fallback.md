@@ -61,3 +61,5 @@ adapter는 HTTP 오류를 잡아 UNKNOWN 값으로 돌려준다. Resilience4j의
 [week5 구현 기록](../week5/implementation-log.md)에 둔다. `PaymentLookupRetryTest`(응답 순서별 GET 수, 예산, 생성 POST 제외), `PaymentLookupCircuitBreakerTest`(GET마다 집계, OPEN에서 GET 0·즉시 반환, 정상 FAILED·형식 오류의 성공 표본 집계, 시계로 OPEN → HALF_OPEN → CLOSED/OPEN), `PaymentProviderContractTest`(라벨, 조회·생성 timeout 분리), `OrderPaymentIntegrationTest`(한 번의 reconcile로 회복, 끝내 실패·회로 OPEN에서 저장 상태·checked false), `PaymentChaosTest`(PG를 내리거나 느리게 했을 때 OPEN 뒤 reconcile 200ms 미만·장애 중 상품 조회 API 200·1초 미만, PG 응답 직후 DB가 멈춰도 회로 실패 0·CLOSED, PG 복구 후 배치의 시험 조회로 CLOSED).
 
 형식 오류는 실패 표본에서 제외하지만 성공 표본에는 포함한다. 후속 테스트가 CLOSED의 성공 표본 수와 HALF_OPEN에서 JSON 오류 두 번 뒤 CLOSED 전환을 확인한다. 이때 두 조회 결과는 모두 UNKNOWN/UNEXPECTED_RESPONSE이며 회로의 회복과 결제 결과 확인은 구분된다. 이 테스트는 현재 판정을 검증한 것이며 그 판정이나 숫자의 적절성을 새로 선정한 것은 아니다.
+
+`PaymentLookupPoolSeparationExperimentTest`는 총 연결 한도를 5개로 맞춰 공유 풀, 공유 풀 앞의 조회 실행 3개 제한, 조회 풀 3개·생성 풀 2개 분리를 비교했다. PG 응답 400ms·연결 대기 300ms, 조회 20건·생성 1건에서 실행 제한과 풀 분리 모두 생성 POST가 접수됐지만, 풀 분리는 조회 대기 실패로 조회 회로가 OPEN이 됐다. 넘친 조회를 회로 밖에서 즉시 거절하는 것과 연결 풀에서 기다리게 하는 것의 차이다. 실제 HTTP 경계에서 세 번씩 확인한 후보 비교이며, 앱의 공유 풀 결정과 retry·회로 설정은 유지한다. 생성 요청도 몰리는 경우와 연결 배분의 적절성은 검증하지 않았다.

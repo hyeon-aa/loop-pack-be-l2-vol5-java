@@ -380,7 +380,7 @@ DB 장면을 위해 이 테스트에서만 JDBC `socketTimeout=3000&connectTimeo
 | `LookupResilienceSettings` | 조회 retry·회로 숫자를 코드 상수에서 `application.yml`의 `lookup-retry.*`·`lookup-circuit.*`로 옮김. 값은 그대로 |
 | `PaymentProviderContractTest` | 설정 바인딩 테스트에 새 키 8개를 추가. 기대값은 그대로 |
 | `PaymentLookupWrapOrderExperimentTest` | 고객마다 첫 GET만 503인 장애에서 감싸는 순서만 비교. retry가 바깥이면 확인 2·막힘 2·GET 4·OPEN, 회로가 바깥이면 확인 4·막힘 0·GET 8·CLOSED. 회로가 바깥인 쪽은 테스트 안에서만 감쌈. 처음에는 회로가 바깥인 쪽에 남은 예산 확인이 빠져 조건이 달랐고, 맞춘 뒤 다시 돌려 같은 결과를 확인. 첫 거래만 retry 끝까지 503이고 뒤 정상 3건인 장애도 두 순서로 실행: retry가 바깥이면 실패 3·성공 1, 정상 1건 확인·2건 막힘·GET 4·OPEN, 회로가 바깥이면 실패 1·성공 3, 정상 3건 확인·막힘 0·GET 6·CLOSED. 처음에는 회로가 바깥인 쪽을 창 계산으로만 적었다가 실행해 같은 결과를 확인 |
-| `PaymentLookupWindowSizeExperimentTest` | 창 4·20(최소 표본 같은 값). 거래 하나만 실패 + 정상 30건: 창 4는 막힘 29·OPEN, 창 20은 막힘 0·CLOSED. 조회 전체 503: 창 4는 2번째 고객·GET 4에서 OPEN, 창 20은 7번째 고객·GET 20에서 OPEN. 거래 하나만 실패하는 장애에 창 20·최소 표본 4도 실행: 창 4와 같이 첫 정상 조회에서 실패율 75%로 OPEN, 막힘 29. 창 20의 효과는 최소 표본을 함께 늘린 데서 나왔음 |
+| `PaymentLookupWindowSizeExperimentTest` | 창 4·20(최소 표본 같은 값). 거래 하나만 실패 + 정상 30건: 창 4는 막힘 29·OPEN, 창 20은 막힘 0·CLOSED. 조회 전체 503: 창 4는 2번째 고객·GET 4에서 OPEN, 창 20은 7번째 고객·GET 20에서 OPEN. 두 장애에 창 20·최소 표본 4도 실행: 거래 하나만 실패하면 첫 정상 조회에서 실패율 75%로 OPEN·막힘 29, 전체 503이면 2번째 고객·GET 4에서 실패율 100%로 OPEN. 둘 다 창 4·최소 4와 같았음 |
 | `PaymentLookupCircuitSettingsExperimentTest` | 실패율 50·80%, 창 최근 4개·최근 10초를 네 장면에서 비교. 실패율 80%는 거래 하나 실패·새벽 장면에서 막힘 0이지만 절반씩 실패하는 PG를 못 알아챔. 시간 창은 새벽 장면만 막힘 0. 셋 다 테스트 안의 같은 조회 장치 |
 | `PaymentLookupTimeoutExperimentTest` | 조회 응답 대기 300·500·800ms × PG 400ms·2초, 연결 빌리기 대기 300·500ms. 300ms는 조금 느린 정상 PG를 막고, 800ms는 고객당 retry가 줄지만 4번째 고객에서 OPEN. 연결 대기 500ms는 확인 5 → 10, 그래도 OPEN |
 | `PaymentLookupRetryCountExperimentTest` | retry 최대 1·3회. 가끔 끊김: 확인 3 대 4. 계속 장애: GET 4로 같고 OPEN은 4번째 대 2번째 고객. 거래 하나만 실패: 막힘 0 대 2 |
@@ -388,10 +388,23 @@ DB 장면을 위해 이 테스트에서만 JDBC `socketTimeout=3000&connectTimeo
 | `PaymentLookupPoolFailureCountingExperimentTest` | 테스트 안의 조회 장치로 연결 빌리기 실패를 세는 정책과 세지 않는 정책 비교. PG 정상: 확인 5·OPEN 대 확인 10·CLOSED. PG 느림(2초): 둘 다 OPEN, 시점 약 0.31초 대 0.50초 |
 | `PaymentCreateConnectionPoolExperimentTest` | MySQL·가짜 PG. 조회 20개가 연결을 잡은 순간 confirm. 11번 중 8번은 POST가 PG에 닿지 못해 UNKNOWN·예약 유지, reconcile 0건으로 끝나지 않음. 3번은 연결이 풀린 뒤 POST가 나가 PENDING. 결과를 고정하지 않고 각 결과의 사실만 확인 |
 | `PaymentLookupBulkheadExperimentTest` | 조회 동시 3개 제한(테스트 안의 세마포어). 조회 확인 3, 17개 즉시 확인 불가, 회로 CLOSED, 생성 POST는 남은 연결로 나가 PENDING |
+| `PaymentLookupPoolSeparationExperimentTest` | 같은 총 연결 한도 5개로 공유 풀·조회 실행 3개 제한·조회 3개/생성 2개 풀 분리를 비교. 조회 확인 5·3·3, 조회 회로 OPEN·CLOSED·OPEN, PG의 생성 POST 수신 0·1·1. 세 조건을 세 번씩 실행해 같은 결과 확인 |
 
-순서·창 크기·retry 횟수·실패율 기준·창 방식 비교는 테스트를 돌리기 전에 예측을 적었고, 결과가 예측과 같았다. OPEN 대기가 지나지 않도록 테스트 시계를 멈춘 채 실행했다. 순서·창 크기·retry 실험은 요청을 하나씩 차례로 보낸 장면이며, 제품 코드는 설정 이동 외에 바꾸지 않았다. 연결 풀 실험(뒤의 네 테스트)은 조회를 동시에 보냈고, 시간에 민감해 세 번 이상 돌려 같은 결과인지 확인했다.
+순서·창 크기·retry 횟수·실패율 기준·창 방식 비교는 테스트를 돌리기 전에 예측을 적었고, 결과가 예측과 같았다. OPEN 대기가 지나지 않도록 테스트 시계를 멈춘 채 실행했다. 순서·창 크기·retry 실험은 요청을 하나씩 차례로 보낸 장면이며, 제품 코드는 설정 이동 외에 바꾸지 않았다. 연결 풀 실험들은 조회를 동시에 보냈고, 시간에 민감해 세 번 이상 돌려 같은 결과인지 확인했다.
 
-**실험 결과를 읽을 때의 한계**: 창 크기 실험은 최소 표본을 함께 바꿨고, 시간 창은 짧은 시간에 이어진 요청이 10초 창에 모두 들어가 창에 들어가는 표본 수도 달라졌다. 손잡이별 결과는 서로 다른 크기의 장면(정상 거래 3건, 30건)에서 쟀으므로 숫자끼리 비교하지 않는다. 시간 창에 불리한 장면(요청이 드묾, 실패가 띄엄띄엄)은 보지 않았다. timeout과 retry 예산의 상호작용은 `PaymentLookupTimeoutExperimentTest`에서 확인했다. 연결 부족을 실패로 세지 않는 후보는 `recordResult`가 false인 결과를 성공 표본에 넣는 방식이며, 표본에서 완전히 제외한 비교는 아니다.
+**실험 결과를 읽을 때의 한계**: 창 크기 실험은 처음에 최소 표본을 함께 바꿨고, 이후 두 장애 모두 창 20·최소 표본 4를 추가해 구분했다. 시간 창은 짧은 시간에 이어진 요청이 10초 창에 모두 들어가 창에 들어가는 표본 수도 달라졌다. 손잡이별 결과는 서로 다른 크기의 장면(정상 거래 3건, 30건)에서 쟀으므로 숫자끼리 비교하지 않는다. 시간 창에 불리한 장면(요청이 드묾, 실패가 띄엄띄엄)은 보지 않았다. timeout과 retry 예산의 상호작용은 `PaymentLookupTimeoutExperimentTest`에서 확인했다. 연결 부족을 실패로 세지 않는 후보는 `recordResult`가 false인 결과를 성공 표본에 넣는 방식이며, 표본에서 완전히 제외한 비교는 아니다.
+
+**창 20·최소 표본 4의 계속 장애 추가 검증**: 창과 최소 표본을 각각 받도록 기존 전체 503 실험을 확장했다. 실행 전 예상은 두 번째 고객의 첫 GET에서 누적 4건 모두 실패해 OPEN이 되는 것이었다. 실제로 고객 1은 GET 3번 실패 뒤 CLOSED, 고객 2는 GET 1번 실패 뒤 OPEN이 되었고, 누적 실패 표본 4·실패율 100%·약 423ms를 기록했다. OPEN 뒤 다음 조회는 PG GET 없이 차단됐다. 이번 로컬 실행의 시간이며 운영 환경의 차단 시간을 뜻하지 않는다.
+
+검증 명령: `./gradlew :apps:commerce-api:experimentTest --tests '*PaymentLookupWindowSizeExperimentTest' :apps:commerce-api:checkstyleTest :apps:commerce-api:test --tests '*LayeredArchitectureTest' --offline` (Java 21). 창 비교 6건과 ArchUnit, Checkstyle test가 통과했고 `BUILD SUCCESSFUL`을 확인했다. 전체 `check`와 나머지 실험은 재실행하지 않았다. 제품 정책·설정과 설계·ADR의 결정은 바꾸지 않았다.
+
+**풀 분리 비교 추가 검증**: 연결 수를 바꿔도 실제 adapter의 응답 처리·재시도 금지 규칙을 그대로 검증하도록, `TestPgPaymentAdapter`에 패키지 내부에서 `HttpClientBuilder`를 받는 생성자를 추가했다. 기본 생성자는 기존과 같은 builder를 넘긴다. 앱의 빈 구성·공유 풀 정책·연결 한도는 바꾸지 않았고, 실험에서만 조회용 adapter(3개)와 생성용 adapter(2개)를 별도 풀로 만들었다. 비교 범위는 HTTP 경계이며 주문·재고 처리는 이번 실험에 포함하지 않는다.
+
+- 첫 실행에서는 모든 조회가 끝난 뒤 현재 창의 실패 수를 검사해 공유 풀·풀 분리 2건이 실패했다. 이미 진행 중이던 정상 조회가 뒤늦게 끝나 창의 실패 표본을 밀어냈기 때문이다. 회로가 열리는 순간의 상태 전환 이벤트에서 실패 수를 기록하도록 측정 시점을 고쳤고, OPEN·실패 표본 4개 이상이라는 검증은 유지했다.
+- 수정 뒤 세 조건 3건을 세 번 실행해 총 9건 통과. 공유 풀은 조회 5건 확인·15건 확인 불가·POST 미발송, 실행 제한은 조회 3건 확인·17건 즉시 거절·POST PENDING, 풀 분리는 조회 3건 확인·17건 대기 후 확인 불가·POST PENDING이었다. OPEN 뒤 다음 조회를 허용하는 정책으로 바꾸지 않았다.
+- 관련 회귀 검사: `PaymentProviderContractTest` 31건, `PaymentLookupRetryTest` 9건, `PaymentLookupCircuitBreakerTest` 6건, `LayeredArchitectureTest` 1건, 합계 47건 통과. Checkstyle main·test도 통과했다. 전체 `check`와 나머지 실험은 재실행하지 않았다.
+- 실행: `./gradlew :apps:commerce-api:experimentTest --tests '*PaymentLookupPoolSeparationExperimentTest' :apps:commerce-api:checkstyleMain :apps:commerce-api:checkstyleTest :apps:commerce-api:test --tests '*PaymentProviderContractTest' --tests '*PaymentLookupRetryTest' --tests '*PaymentLookupCircuitBreakerTest' --tests '*LayeredArchitectureTest' --offline` (Java 21). 두 차례 반복은 `experimentTest --tests '*PaymentLookupPoolSeparationExperimentTest' --rerun-tasks --offline`로 실행했다. 각 명령의 종료 결과는 `BUILD SUCCESSFUL`이었다.
+- 커밋 전 창 비교와 풀 분리 비교를 함께 지정해 실험 9건을 다시 실행했고 모두 통과했다. 같은 명령에 포함한 관련 회귀 테스트 47건과 Checkstyle main·test는 입력 변경이 없어 `UP-TO-DATE`로 확인됐다. 전체 `check`와 나머지 실험은 재실행하지 않았다.
 
 **실험 테스트를 평소 검사에서 분리**: 위 실험 테스트에 `@Tag("experiment")`를 달고, `apps/commerce-api`의 `test`(따라서 `check`)에서 제외했다. 실험은 `./gradlew :apps:commerce-api:experimentTest`로 따로 돌린다.
 - 이유: 기능 검증이 아니라 설정·장애 조건을 바꿔 결과를 비교하는 실험이다. 연결 풀 실험은 연결 대기 300ms와 PG 응답 400ms처럼 100ms 차이에 결과가 걸려, 느린 환경에서 기능과 무관하게 실패할 수 있다.
