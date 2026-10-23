@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 회로의 창 크기(최소 표본도 같은 값)만 바꾸어 두 장애를 비교한다.
  * 거래 하나만 계속 실패하면 큰 창이 정상 조회를 덜 막고, 조회 전체가 계속 실패하면 큰 창이 더 늦게 차단한다.
+ * 거래 하나만 실패하는 장애는 창 20·최소 표본 4도 비교해, 정상 조회를 덜 막은 것이 어느 설정 덕분인지 확인한다.
  * 요청은 하나씩 차례로 보내며, 회로의 OPEN 대기 시간이 지나지 않도록 시계를 멈춘 채 실행한다.
  */
 @Tag("experiment")
@@ -55,12 +56,12 @@ class PaymentLookupWindowSizeExperimentTest {
         }
     }
 
-    @ParameterizedTest(name = "window={0}: healthy verified={1}, blocked={2}, circuit={3}")
-    @CsvSource({"4, 1, 29, OPEN", "20, 30, 0, CLOSED"})
-    void oneFailingTransactionBlocksFewerHealthyLookupsWithALargerWindow(
-        int window, int expectedVerified, int expectedBlocked, State expectedState
+    @ParameterizedTest(name = "window={0}, minimumCalls={1}: healthy verified={2}, blocked={3}, circuit={4}")
+    @CsvSource({"4, 4, 1, 29, OPEN", "20, 20, 30, 0, CLOSED", "20, 4, 1, 29, OPEN"})
+    void oneFailingTransactionBlocksFewerHealthyLookupsOnlyWhenMoreSamplesAreRequired(
+        int window, int minimumCalls, int expectedVerified, int expectedBlocked, State expectedState
     ) {
-        ResilientPaymentProvider provider = providerWithWindow(window);
+        ResilientPaymentProvider provider = providerWithWindow(window, minimumCalls);
         // 첫 거래만 최대 시도 횟수만큼 503을 받는다. 남은 예약은 정상 거래 전에 걷는다.
         for (int i = 0; i < 3; i++) {
             pg.replyNext(503, "");
@@ -82,7 +83,8 @@ class PaymentLookupWindowSizeExperimentTest {
         }
 
         var circuit = provider.lookupCircuitBreaker();
-        System.out.printf("window-one-failing,%d,%d,%d,%s,%d,%d,%d%n", window, verified, blocked, circuit.getState(),
+        System.out.printf("window-one-failing,%d,%d,%d,%d,%s,%d,%d,%d%n", window, minimumCalls, verified, blocked,
+            circuit.getState(),
             circuit.getMetrics().getNumberOfFailedCalls(), circuit.getMetrics().getNumberOfSuccessfulCalls(), pg.lookupCalls());
         assertThat(verified).isEqualTo(expectedVerified);
         assertThat(blocked).isEqualTo(expectedBlocked);
@@ -92,7 +94,7 @@ class PaymentLookupWindowSizeExperimentTest {
     @ParameterizedTest(name = "window={0}: opened at customer {1} after {2} GETs")
     @CsvSource({"4, 2, 4", "20, 7, 20"})
     void everyLookupFailingIsBlockedLaterWithALargerWindow(int window, int expectedCustomer, int expectedGets) {
-        ResilientPaymentProvider provider = providerWithWindow(window);
+        ResilientPaymentProvider provider = providerWithWindow(window, window);
         for (int i = 0; i < MAX_CUSTOMERS * 3; i++) {
             pg.replyNext(503, "");
         }
@@ -126,10 +128,10 @@ class PaymentLookupWindowSizeExperimentTest {
         assertThat(getsUntilOpen).isEqualTo(expectedGets);
     }
 
-    private ResilientPaymentProvider providerWithWindow(int window) {
+    private ResilientPaymentProvider providerWithWindow(int window, int minimumCalls) {
         LookupResilienceSettings base = LookupSettingsFixture.LEARNING;
         LookupResilienceSettings settings = new LookupResilienceSettings(base.budget(), base.attemptEstimate(),
-            base.maxAttempts(), base.firstWait(), base.waitMultiplier(), window, window,
+            base.maxAttempts(), base.firstWait(), base.waitMultiplier(), window, minimumCalls,
             base.failureRateThreshold(), base.openWait(), base.halfOpenCalls());
         return new ResilientPaymentProvider(adapter, settings, new TestClock());
     }
