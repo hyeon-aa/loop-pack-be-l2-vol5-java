@@ -281,7 +281,7 @@ A·B·C 모두 주문을 먼저 잠근다. B·C는 이어 결제 시도를 잠�
 
 ### 작성 방식
 
-`OrderFacade`에는 `@Transactional`을 붙이지 않는다. 바깥 트랜잭션이 있으면 기본 REQUIRED 전파로 안쪽 구간이 모두 합쳐진다. 또 같은 객체 안의 호출은 프록시를 거치지 않아 annotation이 적용되지 않으므로, 트랜잭션 구간은 별도 빈 `OrderPaymentTransactions`의 public 메서드에 둔다. [Spring 전파 규칙](https://docs.spring.io/spring-framework/reference/6.2/data-access/transaction/declarative/tx-propagation.html), [Spring @Transactional 적용 방식](https://docs.spring.io/spring-framework/reference/6.2/data-access/transaction/declarative/annotations.html).
+`OrderFacade`에서 결제 흐름을 조정하는 `confirm`·`reconcile`·`handleCallback`·`recover`에는 `@Transactional`을 붙이지 않는다. 주문 생성과 저장 상태 조회 메서드는 각각 필요한 트랜잭션을 유지한다. 결제 흐름 전체를 바깥 트랜잭션으로 감싸면 기본 REQUIRED 전파로 A·B·C가 모두 합쳐진다. 또 같은 객체 안의 호출은 프록시를 거치지 않아 annotation이 적용되지 않으므로, 결제의 트랜잭션 구간은 별도 빈 `OrderPaymentTransactions`의 public 메서드에 둔다. [Spring 전파 규칙](https://docs.spring.io/spring-framework/reference/6.2/data-access/transaction/declarative/tx-propagation.html), [Spring @Transactional 적용 방식](https://docs.spring.io/spring-framework/reference/6.2/data-access/transaction/declarative/annotations.html).
 
 ## API 입구와 결과 확인
 
@@ -412,7 +412,7 @@ PG가 꺼졌거나, PG는 정상인데 조회가 몰려 연결 풀(같은 주소
 | 관찰 지표 | 호출 종류·주문 번호·소요 시간·실패 이유를 카드 정보 없이 로그·지표로 남기는 일은 아직 없음. 회로 상태 변화도 로그·지표·알림으로 내보내지 않음. 운영이라면 OPEN 전환은 운영자가 알아야 하는 사건이라 지표(Micrometer)와 알림으로 낸다. 회로는 메모리라 서버마다 따로이고 재시작하면 CLOSED |
 | 회로 숫자 | 창 4·최소 4는 상태 변화를 관찰하기 쉬운 학습값이라 우연한 실패 2번에도 열릴 수 있음. 운영이라면 평소 실패율·응답 시간 p99·호출량을 보고, 호출량에 맞는 큰 창이나 시간 기반 창(예: 최근 60초)을 쓴다 |
 | 느린 응답 | 지금은 실패율만 본다. PG는 죽기 전에 느려지는 경우가 많아 운영이라면 느린 호출 비율(`slowCallRateThreshold`)도 함께 본다. 기준을 정할 정상 응답 시간 분포가 없어 넣지 않았다 |
-| callback 조회 증폭 | 우리 시도가 아니거나 거래가 있는 완료 시도는 조회 없이 끝냄. 거래 없이 FAILED로 닫힌 시도는 늦은 거래 확인을 위해 완료 뒤에도 조회함. 미완료·거래 없이 닫힌 시도의 중복 알림은 매번 조회하며 호출 제한은 없음 |
+| callback 조회 증폭 | 우리 시도가 아니거나 결제 결과와 주문·예약 반영까지 끝난 시도는 조회 없이 끝냄. 결제 결과만 저장되고 주문 반영이 남은 시도는 조회 없이 저장한 결과로 TX C를 실행함. 결과를 모르는 시도의 중복 알림은 매번 조회하며 호출 제한은 없음 |
 | providerOrderId 단위 | 주문당 한 시도라 주문 기반 번호. 실패 후 재결제를 허용하면 과거·새 거래가 같은 주문 조회에 섞이므로 시도 단위 번호를 다시 검토 |
 | 망취소 | 결과 미확인 거래에 취소를 요청하는 대안. 테스트 PG에 취소 계약이 없어 범위 밖. 취소 응답까지 잃으면 다시 미확인 |
 | 결과 저장·주문 반영 분리 | 결제 뒤 작업(포인트·쿠폰·알림 등)이 늘면 C를 더 나누거나 비동기로 옮길지 검토. 그때는 B 커밋과 메시지 발송 사이의 유실도 다뤄야 함 |

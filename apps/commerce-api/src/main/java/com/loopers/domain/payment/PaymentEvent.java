@@ -63,7 +63,6 @@ public class PaymentEvent extends BaseEntity {
     public enum Reason {
         REJECTED_BEFORE_CREATE,
         NOT_SENT,
-        // 이전 만료 정책으로 저장된 이력을 읽기 위한 값이다. 새 이력에는 사용하지 않는다.
         NO_TRANSACTION_YET,
         MULTIPLE_TRANSACTIONS,
         ORDER_MISMATCH,

@@ -21,7 +21,7 @@ Date: 2026-10-18
 
 재발송하지 않는 정책은 중복 결제를 줄이지만 모든 시도의 자동 완료를 보장하지 않는다. 발송 기록 뒤 실제 전송 전 중단되는 문제와 조회 0건의 판단은 이후 DB 연결·재시작 단계에서도 남는다. 현재 adapter만으로 주문당 한 시도나 결과 한 번 적용이 보장되지는 않는다.
 
-TX A 커밋 뒤 POST 전 종료와 POST 뒤 결과 저장 전 종료는 모두 REQUESTED로 남을 수 있다. transactionKey가 없으면 저장한 providerOrderId로 기존 거래를 조회하며, 조회 0건이어도 자동 재발송·예약 반환하지 않는다. 수동 reconcile이 기본 복구 경로이고, 10분이 지난 미완료 시도는 배치가 같은 방식으로 조회한다([ADR 0033](0033-payment-recovery-batch-for-unfinished-attempts.md)). 이번 호출의 확실한 미발송이 기존 시도 전체의 효과 0건을 뜻하지는 않는다. 이후 [ADR 0034](0034-close-only-proven-unsent-payments-and-keep-unresolved-pending.md)에서, 생성이 연결 단계에서 끝나 보내지 못한 것이 확실하면 바로 실패로 닫고, 30분이 지나도 PG에 거래가 없는 시도는 배치가 닫기로 했다. 재발송하지 않는다는 이 결정은 그대로다.
+TX A 커밋 뒤 POST 전 종료와 POST 뒤 결과 저장 전 종료는 모두 REQUESTED로 남을 수 있다. transactionKey가 없으면 저장한 providerOrderId로 기존 거래를 조회하며, 조회 0건이어도 자동 재발송·예약 반환하지 않는다. 수동 reconcile이 기본 복구 경로이고, 10분이 지난 미완료 시도는 배치가 같은 방식으로 조회한다([ADR 0033](0033-payment-recovery-batch-for-unfinished-attempts.md)). REQUESTED 기록만으로는 실제 발송 여부를 증명할 수 없다. [ADR 0034](0034-close-only-proven-unsent-payments-and-keep-unresolved-pending.md)에 따라 생성이 연결 단계에서 끝나 보내지 못한 것이 확실한 경우에만 즉시 실패로 닫는다. 30분이 지나도 조회가 0건인 시도는 미완료·예약을 유지한다. 시간 경과와 조회 0건을 근거로 닫던 자동 만료 정책은 철회했으며, 재발송하지 않는다는 이 결정은 그대로다.
 
 망취소는 미확인 거래를 취소 요청하는 대안이지만 현재 로컬 PG에는 취소 계약이 없다. 취소 응답도 유실될 수 있으므로 그 자체가 확실한 실패·원자적 rollback을 보장하지 않는다. 이번 범위에는 추가하지 않는다.
 

@@ -12,7 +12,7 @@
 
 `TX A`는 예약·시도 준비, `TX B`는 검증한 결제 결과·이력 저장, `TX C`는 저장 결과의 주문·예약·재고 반영이다. 각 이름은 역할이며 전체 주문에서 TX가 정확히 세 번만 실행된다는 뜻은 아니다. PENDING·UNKNOWN에는 C가 필요 없고, C 오류 뒤에는 B 없이 C부터 재실행한다. PG 생성·조회 HTTP는 DB TX 밖이다.
 
-그림의 **결제 요청**은 결제 시도(`payment_attempt`)다. 각 칸의 ▸ 줄은 그 단계가 끝난 뒤의 상태이며, `결제 요청 · 주문 · 예약 · 재고` 순서로 적는다. 1장은 결제를 시작하는 confirm, 2장은 결과를 아직 모를 때 나중에 확인하는 흐름이다. 1장이 끝나고 고객이 응답을 받은 뒤 시간이 지나야 2장이 시작되므로 두 장으로 나눴다.
+그림의 **결제 요청**은 결제 시도(`payment_attempt`)다. 각 칸의 ▸ 줄은 그 단계가 끝난 뒤의 상태이며, `결제 요청 · 주문 · 예약 · 재고` 순서로 적는다. 1장은 결제를 시작하는 confirm, 2장은 저장된 시도를 확인·복구하는 공통 흐름이다. 두 그림은 역할로 나눈 것이며, callback은 confirm 응답이 돌아오기 전에도 올 수 있다.
 
 ### 1장. 결제 시작 (confirm)
 
@@ -26,6 +26,7 @@ flowchart TD
     B2["TX B — PG 대답을 DB에 기록<br/>▸ 결제 요청 UNKNOWN<br/>▸ 주문 · 예약 · 재고 그대로"]
     B3["TX B → TX C<br/>▸ 결제 요청 FAILED <br/>▸  주문 PAYMENT_FAILED<br/>▸ 예약 RELEASED · 재고 5"]
     DEAD["TX B 실행 못 함<br/>▸ 결제 요청 REQUESTED 그대로<br/>▸ 주문 · 예약 · 재고 그대로<br/>고객은 응답을 받지 못함"]
+    RECOVERY["서버 복구 뒤 2장에서 확인<br/>reconcile API · 배치가 기존 시도를 조회"]
     R1["고객에게 202 결제 진행 중<br/>결과는 아직 모름 → 2장으로"]
     R2["고객에게 200 결제 실패<br/>여기서 끝"]
 
@@ -34,7 +35,7 @@ flowchart TD
     Q1 -->|"ⓑ 보냈는지 모름<br/>응답 timeout · 503 · 재사용 연결 끊김 · 형식 오류"| B2 --> R1
     Q1 -->|"ⓒ 접수 전 거절<br/>422 + 증거 네 가지"| B3 --> R2
     Q1 -->|"ⓓ 보내지 못함이 확실<br/>연결을 빌리지 못함 · 새 연결 거부 · 연결 시간 초과"| B3
-    POST -.->|"POST 전후로 서버가 죽음"| DEAD -.->|"2장의 reconcile API · 배치가 찾음"| R1
+    POST -.->|"POST 전후로 서버가 죽음"| DEAD -.-> RECOVERY
 
     classDef tx fill:#e8f0fe,stroke:#356ac3,color:#111827
     classDef pg fill:#fff3d6,stroke:#b87900,color:#111827
@@ -250,7 +251,7 @@ sequenceDiagram
     participant P as 테스트 PG
 
     O->>D: 주문 생성, 내부 orderId=42
-    O->>O: PaymentAttempt.start(42, 시도 키, 3000)<br/>→ providerOrderId=LP-ORD-0000000042<br/>HTTP 호출 없음
+    O->>O: 결제 시도 생성<br/>주문 42 · 시도 키 · 금액 3000 · 합성 카드 입력<br/>→ providerOrderId=LP-ORD-0000000042<br/>HTTP 호출 없음
     O->>D: TX A, 시도 키·주문 ID·PG 주문 번호·<br/>금액·예약 저장 후 COMMIT
     O->>A: 저장한 providerOrderId로 발송 요청
     A->>P: POST, orderId=LP-ORD-0000000042, amount=3000
@@ -288,7 +289,7 @@ PG에는 transactionKey가 이미 있어도 응답을 못 받으면 우리는 �
 | callback API | PG가 부르는 입구. 결과 알림을 받을 뿐 대조하지 않는다 |
 | 결과 확인 | 두 입구가 공통으로 하는 "필요한 PG 조회 → B 결과 저장 → 종결이면 C 주문 반영". 저장된 종결 결과가 있으면 C부터 한다. 대조는 여기서 일어나며 기준은 PG 기록이다 |
 
-API 입구 4개와 callback 처리 순서는 [설계](design.md)의 「API 입구와 결과 확인」에 둔다.
+API 입구 5개와 callback 처리 순서는 [설계](design.md)의 「API 입구와 결과 확인」에 둔다.
 
 ## 4. 유즈케이스별 기대 결과
 
@@ -307,7 +308,7 @@ API 입구 4개와 callback 처리 순서는 [설계](design.md)의 「API 입�
 | UC11. 과거 POINT 주문 | PG 전환 전에 확정한 포인트 결제 주문 조회·재요청 | 기존 결제수단·금액·결과·소유권 유지. PG 거래 생성·추가 포인트 차감 없음 | 새 PG 주문과 과거 결제 사실을 구분해 회귀 검증 |
 | UC12. 예약 뒤 상품 삭제 | PAYMENT_PENDING 주문이 재고를 확보한 뒤 상품 비노출 | 저장된 품목·금액·예약으로 기존 PG 결과 마무리. 성공 시 추가 차감 없음, 확정 실패 시 한 번 반환 | 새 조회·새 주문에서는 계속 제외. 실패 반환으로 상품이 다시 노출되지 않음 |
 | UC13. 예약 중 관리자 재고 변경 | 수량 3 예약 뒤 관리자가 가용 재고를 10으로 설정 | 예약 수량 3 유지. 성공이면 가용 재고 10, 확정 실패면 13 | 동일 재고 행 보호 규칙 적용. 실패 반환을 과거 재고 5로 덮어쓰지 않음 |
-| UC14. 보내지 못한 결제 생성 | 생성 POST가 연결 단계에서 끝남 (조회가 연결 풀을 모두 잡음, 새 연결 거부) | PG 거래 0건. 결제 시도 키 없이 FAILED(사유 `NOT_SENT`), 주문 PAYMENT_FAILED, 예약 RELEASED, 재고 2→5 | 고객은 주문을 새로 만든다. 같은 주문으로 다시 결제하지 않음 |
+| UC14. 보내지 못한 결제 생성 | 생성 POST가 연결 단계에서 끝남 (조회가 연결 풀을 모두 잡음, 새 연결 거부) | PG 거래 0건. PG 거래 키(transactionKey) 없이 FAILED(사유 `NOT_SENT`), 결제 시도 키(attemptKey)는 유지. 주문 PAYMENT_FAILED, 예약 RELEASED, 재고 2→5 | 고객은 주문을 새로 만든다. 같은 주문으로 다시 결제하지 않음 |
 | UC15. 오래 결과를 모르는 결제 | 30분이 지나도 REQUESTED·UNKNOWN이고 PG 조회가 0건 | 미완료·예약 RESERVED·재고 유지. `NO_TRANSACTION_YET`·IGNORED 이력만 추가하며 새 POST 없음 | 이후 SUCCESS면 정상 확정. 반복 callback·reconcile·배치에도 추가 차감·반환 없음 |
 
 확정 실패에서의 반환은 **현재 가용 재고에 예약 수량 3을 더하는 작업**이다. 다른 변경이 없다면 2→5이며, 실제 구현에서 재고를 무조건 5로 덮어쓰지 않는다.
