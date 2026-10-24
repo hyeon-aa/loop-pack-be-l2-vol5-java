@@ -70,7 +70,7 @@ flowchart TD
     G1["거래 한 건 조회<br/>GET /payments/{transactionKey}"]
     G2["주문 번호로 목록 조회<br/>GET /payments?orderId=LP-ORD-…42"]
     CB{"회로 OPEN?"}
-    CALL["PG에 GET 보냄<br/>TX 밖 · 응답 500ms까지 기다림"]
+    CALL["PG에 GET 보냄<br/>TX 밖 · 응답 대기 timeout 500ms"]
     Q2{"PG 대답은?"}
     RETRY{"횟수 · 시간<br/>남았나?<br/>최대 3번 · 예산 2초"}
     WAIT["쉬었다가 다시<br/>100ms → 200ms"]
@@ -85,7 +85,7 @@ flowchart TD
     JOIN(["응답 만들기"])
     WHO2{"누가 불렀나?"}
     RA["reconcile API → 고객<br/><br/>200 · 결제 · 주문 다 끝남<br/>→ 화면: 결제 완료 또는 결제 실패. 더 확인 안 함<br/><br/>202 · checked true · 대답은 들었지만 미완료 (ⓑ ⓒ ⓕ)<br/>→ 화면: 결제 처리 중. 잠시 뒤 다시 확인<br/><br/>202 · checked false · 끝내 못 들음 (ⓐ)<br/>→ 화면: 지금 확인할 수 없음. 조금 더 쉬었다 다시 확인"]
-    RB["callback → PG<br/><br/>200 · 알림 받아서 처리함<br/>→ PG는 같은 알림을 다시 안 보냄<br/><br/>503 · 끝내 못 들음 (ⓐ)<br/>→ PG가 다시 보낼 수도 있음 (PG의 규칙)<br/>안 와도 reconcile API · 배치로 회복"]
+    RB["callback → PG<br/><br/>200 · 알림 처리 확인(ACK)<br/><br/>503 · 끝내 못 들음 (ⓐ)<br/><br/>재전송·중복 여부는 PG의 규칙<br/>알림이 다시 안 와도 reconcile API · 배치로 회복"]
     RC["배치 → 답할 상대 없음<br/><br/>완료 · 미완료 · 실패 개수만 셈<br/>→ 아직 PAYMENT_PENDING인 건은<br/>다음 실행에서 다시 대상<br/>(스케줄러를 켜면 앞 실행이 끝나고 1분 뒤)<br/><br/>오래 기다려도 ⓑ 0건이면<br/>→ 미완료 · 예약 유지 · 새 POST 없음"]
 
     WHY --> WHO

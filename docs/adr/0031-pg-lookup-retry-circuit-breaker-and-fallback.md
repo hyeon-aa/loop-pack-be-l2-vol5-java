@@ -23,7 +23,7 @@ adapter는 HTTP 오류를 잡아 UNKNOWN 값으로 돌려준다. Resilience4j의
 **감싸는 범위와 순서**
 
 - `ResilientPaymentProvider`가 조회 두 경로(거래 키·주문 번호)만 감싼다. 생성 POST는 그대로 adapter로 넘긴다.
-- 순서는 바깥부터 fallback → retry → 회로 → GET이다. retry가 GET을 할 때마다 회로 허가를 받으므로 회로는 실제 GET 하나를 한 표본으로 센다. 회로가 막은 호출(`CallNotPermittedException`)은 retry에서 제외하고 바로 CIRCUIT_OPEN으로 돌려준다.
+- 순서는 바깥부터 fallback → retry → 회로 → GET이다. retry가 조회를 시도할 때마다 회로 허가를 받으며, 회로는 허용한 조회 시도 하나를 한 표본으로 센다. 연결을 빌리지 못해 PG에 도착하지 못한 시도도 포함하므로, 표본 수와 PG가 받은 GET 수는 다를 수 있다. 회로가 막은 호출(`CallNotPermittedException`)은 표본에 넣지 않고 retry에서도 제외해 바로 CIRCUIT_OPEN으로 돌려준다.
 - 두 조회 경로는 같은 PG 조회 장애를 공유한다고 보고 회로 하나를 쓴다.
 
 **숫자 (현재 코드의 임시 학습값 — 선정 미완료)**
@@ -44,14 +44,14 @@ adapter는 HTTP 오류를 잡아 UNKNOWN 값으로 돌려준다. Resilience4j의
 - 결과가 아직 미확정인 시도만 PG 조회 정책을 거친다. 결제 SUCCESS·FAILED가 저장됐지만 주문이 미반영이면 PG 조회·회로 없이 TX C로 복구한다(ADR 0032). C의 DB 오류는 이 GET retry의 대상이 아니다. B의 결제 종결만으로 주문 반영 완료나 callback 생략을 판단하지 않는다.
 
 - retry 소진·예산 부족·회로 OPEN이면 TX B를 열지 않고 저장 상태를 돌려준다. 결제 시도·주문·예약·재고는 그대로다. 원래 PENDING이던 시도를 UNKNOWN으로 바꾸지 않는다.
-- callback 입구에서는 같은 상황에 TX B 없이 PG에 503을 돌려준다. 200을 주면 PG가 다시 보낼 기회가 사라지기 때문이다. 다시 보낼지는 PG의 규칙이다.
+- callback 입구에서는 같은 상황에 TX B 없이 PG에 503을 돌려준다. 알림을 처리했다는 200 대신 확인하지 못했음을 알려 PG가 재전송을 판단할 수 있게 한다. 실제 재전송·중복 여부는 PG의 규칙이며, 200을 보냈다고 중복 알림이 없다는 보장은 아니다.
 - reconcile 응답의 `checked`가 false다. PENDING(“물어봤더니 처리 중”, checked true)과 fallback(“물어보지 못했다”, checked false)을 구분한다. confirm의 생성 응답이 UNKNOWN일 때도 false다.
 - 같은 키 confirm이 PG를 부르지 않고 미완료 저장 상태만 반환할 때도 `checked: false`다. 저장된 SUCCESS·FAILED로 TX C를 복구했거나 주문 반영까지 완료된 결과는 추가 조회 없이 true로 반환한다. DB에 checked를 저장하지 않고 이번 응답을 구성할 때 판단한다.
 
 ## Alternatives and costs
 
 - **에러가 보이는 adapter 안쪽에서 retry·회로를 돌리고 마지막에 값으로 바꾸기**: 에러 종류별로 세밀하게 다룰 수 있지만 adapter를 둘로 나눠야 한다. 이유를 남기는 일은 어느 쪽이든 필요해서 라벨 방식을 택했다.
-- **회로를 retry 바깥에 두기**: OPEN일 때 retry까지 가지 않지만, retry 묶음의 최종 결과만 세므로 계속 503이면 OPEN까지 GET이 두 배로 나가고, retry가 매번 살리면 불안정을 영영 못 본다. 대신 회로 차단을 retry에서 제외하는 설정으로 헛기다림을 막았다.
+- **회로를 retry 바깥에 두기**: OPEN일 때 retry까지 가지 않지만, retry 묶음의 최종 결과만 센다. 고객 4명의 첫 GET만 503이고 재시도는 정상인 장면에서 retry가 바깥이면 GET 4번 뒤 OPEN, 회로가 바깥이면 GET 8번에도 실패 표본 0·CLOSED였다. 반대로 거래 하나만 retry 끝까지 503이면 회로가 바깥인 쪽은 실패 1개로만 세어 뒤의 정상 조회 3건을 막지 않았고, retry가 바깥인 쪽은 실패 3개로 OPEN이 되어 2건을 막았다([실험 ②](../week5/resilience-experiment-plan.md#wrap-order-experiments)). GET마다 실패를 보는 쪽을 택하고, 회로 차단은 retry에서 제외하는 설정으로 헛기다림을 막았다.
 - **어노테이션(`@Retry`·`@CircuitBreaker`)**: 코드는 짧지만 순서가 aspect 설정에 숨고 자기 호출 함정이 있다. 순서를 코드로 드러내려고 직접 감쌌다.
 - **결제 생성 POST 회로와 TX A 전 확인**: 생성이 안 될 게 뻔하면 재고를 잡기 전에 거절할 수 있다. 확인할 회로는 조회가 아니라 생성 회로여야 하므로 이번에는 만들지 않았다. 조회 회로가 OPEN이어도 confirm의 POST는 나간다.
 - **한계**: 숫자는 측정값이 아니다. 회로는 메모리에 있어 재시작하면 CLOSED로 새로 시작하고 서버마다 따로다. 회로는 동시 호출 수를 제한하지 않는다(bulkhead 미적용). 조회가 연결 풀(같은 주소당 5개)보다 많이 몰리면, 연결을 빌리지 못한 실패도 `TEMPORARY_FAILURE`로 세져 PG가 정상인데 회로가 열리는 것을 실험으로 확인했다([week5 실험 E](../week5/resilience-experiment-plan.md#learning-e)). 실패 분류와 bulkhead는 바꾸지 않았다. 1.1s는 재시도 판단용 추정치로, 현재의 지연 테스트에서는 GET 2회 뒤 멈춘다. 최초 GET의 시작을 예산으로 막거나 진행 중인 호출에 남은 시간을 적용하지 않으며, 실제 GET 전체의 1.1s 상한이나 전체 2s 종료를 보장하지 않는다. 예산은 PG 조회 구간을 대상으로 하며 reconcile 전체(DB 포함) 시간과 다르다.
