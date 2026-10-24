@@ -27,7 +27,7 @@
 
 **자동 만료 철회 전 전체 검사 이력**: `./gradlew :apps:commerce-api:check --offline` (Java 21, `DOCKER_HOST=tcp://localhost:2375`) → 69 suites·503건, 실패·오류·skip 0. Checkstyle main·test 오류 0과 ArchUnit 포함. 종료 결과 `BUILD SUCCESSFUL`, 4분 10초. 실험 테스트(`@Tag("experiment")`)는 이 검사에서 빠지며, `./gradlew :apps:commerce-api:experimentTest`로 따로 돌려 9 suites·41건 통과([17절](#assumption-experiments)). 자동 만료 철회 뒤의 검사는 [18절](#close-unsent-and-expired)에 별도로 기록한다.
 
-**최신 전체 검사**: 자동 만료를 철회하고 남은 만료 흔적(닫힌 결제 재조회 분기, 만료 이력 사유, 겹치는 테스트)을 정리한 뒤 `./gradlew :apps:commerce-api:check --offline` → 69 suites·503건, 실패·오류·skip 0. Checkstyle main·test 오류 0과 ArchUnit 포함. `BUILD SUCCESSFUL`, 4분 58초. 실험 테스트는 `./gradlew :apps:commerce-api:experimentTest`로 따로 돌려 9 suites·44건 통과(감싸는 순서 실험에 "거래 하나만 실패" 장면 2건, 창 크기 실험에 창 20·최소 표본 4 1건 추가).
+**최신 전체 검사**: 일반 검사와 실험 테스트를 따로 실행했다. 일반 검사는 `./gradlew :apps:commerce-api:check --offline` → 69 suites·503건, 실패·오류·skip 0. Checkstyle main·test 오류 0과 ArchUnit 포함, `BUILD SUCCESSFUL`(4분 47초). 실험 테스트는 `./gradlew :apps:commerce-api:experimentTest --offline` → 10 suites·48건, 실패·오류·skip 0. 실행 경위는 [17절의 전체 재실행](#experiment-full-rerun)에 둔다.
 
 **실행 환경**: Java 21(기본 JDK가 다르면 `JAVA_HOME`을 Java 21로 지정한다. 17로는 `List.getFirst()` 컴파일 오류가 난다), `source ./scripts/fix-docker-testcontainers.sh`로 Docker 연결을 맞춘 뒤 Testcontainers MySQL과 테스트가 띄우는 가짜 PG HTTP 서버를 쓴다.
 
@@ -405,6 +405,10 @@ DB 장면을 위해 이 테스트에서만 JDBC `socketTimeout=3000&connectTimeo
 - 관련 회귀 검사: `PaymentProviderContractTest` 31건, `PaymentLookupRetryTest` 9건, `PaymentLookupCircuitBreakerTest` 6건, `LayeredArchitectureTest` 1건, 합계 47건 통과. Checkstyle main·test도 통과했다. 전체 `check`와 나머지 실험은 재실행하지 않았다.
 - 실행: `./gradlew :apps:commerce-api:experimentTest --tests '*PaymentLookupPoolSeparationExperimentTest' :apps:commerce-api:checkstyleMain :apps:commerce-api:checkstyleTest :apps:commerce-api:test --tests '*PaymentProviderContractTest' --tests '*PaymentLookupRetryTest' --tests '*PaymentLookupCircuitBreakerTest' --tests '*LayeredArchitectureTest' --offline` (Java 21). 두 차례 반복은 `experimentTest --tests '*PaymentLookupPoolSeparationExperimentTest' --rerun-tasks --offline`로 실행했다. 각 명령의 종료 결과는 `BUILD SUCCESSFUL`이었다.
 - 커밋 전 창 비교와 풀 분리 비교를 함께 지정해 실험 9건을 다시 실행했고 모두 통과했다. 같은 명령에 포함한 관련 회귀 테스트 47건과 Checkstyle main·test는 입력 변경이 없어 `UP-TO-DATE`로 확인됐다. 전체 `check`와 나머지 실험은 재실행하지 않았다.
+
+<a id="experiment-full-rerun"></a>
+
+**전체 재실행**: 문서와 코드를 다시 대조하면서, 앞의 개별 실행 이후 추가된 실험(창 20·최소 표본 4의 계속 장애, 풀 분리 비교)까지 포함해 실험 테스트 전체를 한 번에 다시 돌렸다. `./gradlew :apps:commerce-api:experimentTest --offline` → 10 suites·48건, 실패·오류·skip 0. 같은 대조에서 `PaymentEvent.Reason`에 남아 있던 만료 정책 주석(현재 쓰는 `NO_TRANSACTION_YET` 위에 붙어 있던 것)을 지웠고, 그 뒤 일반 `check`도 다시 돌려 69 suites·503건 통과를 확인했다. 기대값·Checkstyle·ArchUnit 규칙은 바꾸지 않았다.
 
 **실험 테스트를 평소 검사에서 분리**: 위 실험 테스트에 `@Tag("experiment")`를 달고, `apps/commerce-api`의 `test`(따라서 `check`)에서 제외했다. 실험은 `./gradlew :apps:commerce-api:experimentTest`로 따로 돌린다.
 - 이유: 기능 검증이 아니라 설정·장애 조건을 바꿔 결과를 비교하는 실험이다. 연결 풀 실험은 연결 대기 300ms와 PG 응답 400ms처럼 100ms 차이에 결과가 걸려, 느린 환경에서 기능과 무관하게 실패할 수 있다.
