@@ -18,7 +18,7 @@
 
 ## 실험 조건
 
-모든 회차는 같은 주문 하나로 시작한다. **재고 5개 상품을 3개 주문**하고 confirm까지 끝낸 상태다.
+주문 상태·예약·재고를 설명할 때는 **재고 5개 상품을 3개 주문**하고 confirm을 마친 상태를 기본 예시로 쓴다. 아래는 주문을 연결한 테스트의 흐름이다. 설정·연결 풀 비교에는 주문 DB 없이 adapter와 조회 정책만 호출하는 HTTP 단독 실험도 있다. 실제 거래 수·동시 요청 수·측정 범위는 각 절에 따로 적는다.
 
 ```text
 confirm
@@ -35,7 +35,7 @@ reconcile (고객의 결제 확인)
 ```
 
 - 가짜 PG(`FakePaymentServer`)는 테스트가 띄우는 실제 HTTP 서버다. 요청마다 응답 코드·지연을 예약할 수 있다. 예: `replyNext(503, "")`는 다음 요청 하나에만 503을 돌려준다.
-- 셀 값은 **PG가 받은 GET 수, 결제·주문·예약 상태, 가용 재고**다. 회로를 볼 때는 회로가 센 실패·성공 표본을, 대기를 볼 때는 소요 시간을 더한다.
+- 공통으로 **PG가 받은 GET 수**를 센다. 주문을 연결한 테스트에서는 **결제·주문·예약 상태와 가용 재고**도 확인한다. 회로를 볼 때는 회로가 센 실패·성공 표본을, 대기를 볼 때는 소요 시간을 더한다.
 - 어느 실험에서든 지키는 기준이 있다. **생성 POST는 다시 보내지 않는다.** 결과를 모르면 결제를 실패로 만들지 않고 재고도 돌려주지 않는다.
 
 <a id="learning-a"></a>
@@ -509,7 +509,7 @@ OPEN 뒤 다음 고객은 세 조건 모두 GET 없이 바로 확인 불가를 �
 
 ## E. 조회가 몰릴 때 — 연결 풀
 
-A~D와 7회차 이어서는 요청을 하나씩 차례로 보냈다. 여기서는 조회가 **동시에 몰릴 때**를 본다. 의심한 가정은 "일시적 실패가 쌓이면 PG에 장애가 있다"이다. 코드에서 본 단서는 두 가지다. HTTP 연결을 빌리지 못한 실패(`ConnectionRequestTimeoutException`)도 `ResourceAccessException`으로 올라와 `TEMPORARY_FAILURE`로 분류되고, 생성용·조회용 RestClient가 HttpClient 하나(같은 주소당 연결 5개)를 함께 쓴다.
+앞에서는 주로 순차 요청의 retry·회로 동작을 다뤘다. 7회차 이어서 ⑥의 연결 대기 비교는 예외로 동시 조회 20개를 보냈다. 여기서는 조회가 **동시에 몰릴 때** 연결 풀·회로·생성 POST에 생기는 영향을 다룬다. 의심한 가정은 "일시적 실패가 쌓이면 PG에 장애가 있다"이다. 코드에서 본 단서는 두 가지다. HTTP 연결을 빌리지 못한 실패(`ConnectionRequestTimeoutException`)도 `ResourceAccessException`으로 올라와 `TEMPORARY_FAILURE`로 분류되고, 생성용·조회용 RestClient가 HttpClient 하나(같은 주소당 연결 5개)를 함께 쓴다.
 
 공통 조건: PG는 모든 응답을 400ms 뒤 정상으로 돌려준다. 연결 빌리기 대기는 300ms(`connect-timeout`과 같은 값), 조회 응답 대기는 500ms다. 400ms는 연결 대기보다 길고 응답 대기보다 짧아서, PG는 정상인데 우리만 연결을 못 빌리는 장면이 된다. 앞의 5개가 PG에 도착한 것을 확인한 뒤 나머지를 보낸다. 회로의 창은 최근 4개만 기억하므로, 시도 수는 회로 이벤트를 받아 따로 셌다.
 
@@ -653,7 +653,7 @@ POST가 연결을 잡은 경우는 현재 정책에서 회로가 300ms에 열려
 | 조회 응답 대기·연결 빌리기 대기를 바꿔 비교(7회차 이어서 ⑥) | [PaymentLookupTimeoutExperimentTest](../../apps/commerce-api/src/test/java/com/loopers/infrastructure/payment/PaymentLookupTimeoutExperimentTest.java) |
 | 조회가 몰릴 때 연결을 못 빌린 실패가 회로를 여는 장면(9회차) | [PaymentLookupConnectionPoolExperimentTest](../../apps/commerce-api/src/test/java/com/loopers/infrastructure/payment/PaymentLookupConnectionPoolExperimentTest.java) |
 | 연결을 못 빌린 실패를 세는 정책과 세지 않는 정책 비교(10회차) | [PaymentLookupPoolFailureCountingExperimentTest](../../apps/commerce-api/src/test/java/com/loopers/infrastructure/payment/PaymentLookupPoolFailureCountingExperimentTest.java) |
-| 조회가 몰릴 때 생성 POST가 연결을 못 빌려 UNKNOWN으로 남는 장면(11회차) | [PaymentCreateConnectionPoolExperimentTest](../../apps/commerce-api/src/test/java/com/loopers/application/order/PaymentCreateConnectionPoolExperimentTest.java) |
+| 조회가 몰릴 때 생성 POST가 연결을 못 빌리면 NOT_SENT로 분류해 FAILED·재고 반환, 연결을 빌리면 PENDING(11회차의 과거 UNKNOWN 기록과 구분) | [PaymentCreateConnectionPoolExperimentTest](../../apps/commerce-api/src/test/java/com/loopers/application/order/PaymentCreateConnectionPoolExperimentTest.java) |
 | 조회 동시 수를 제한했을 때(비고) | [PaymentLookupBulkheadExperimentTest](../../apps/commerce-api/src/test/java/com/loopers/application/order/PaymentLookupBulkheadExperimentTest.java) |
 | 같은 총 연결 한도에서 공유 풀·조회 실행 제한·풀 분리를 비교(비고) | [PaymentLookupPoolSeparationExperimentTest](../../apps/commerce-api/src/test/java/com/loopers/infrastructure/payment/PaymentLookupPoolSeparationExperimentTest.java) |
 | 배치 조회도 같은 retry·회로를 거침: 503이 계속된 건은 그대로 두고 다음 건 처리, 회로 OPEN이면 GET 0 | [PaymentRecoveryBatchTest](../../apps/commerce-api/src/test/java/com/loopers/application/order/PaymentRecoveryBatchTest.java) |
