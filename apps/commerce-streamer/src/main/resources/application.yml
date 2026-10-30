@@ -19,15 +19,22 @@ spring:
     active: local
   config:
     import:
-      - jpa.yml
-      - redis.yml
-      - kafka.yml
-      - logging.yml
-      - monitoring.yml
+      - classpath:jpa.yml
+      - classpath:redis.yml
+      - classpath:kafka.yml
+      - classpath:logging.yml
+      - classpath:monitoring.yml
 
 demo-kafka:
+  enabled: false # 실제 소비 설정을 선택하기 전에는 demo도 자동 구독하지 않는다.
   test:
     topic-name: demo.internal.topic-v1
+
+commerce:
+  order-events:
+    topic: order-events
+    consumer:
+      enabled: false # 기본은 끈다.
 
 ---
 spring:
