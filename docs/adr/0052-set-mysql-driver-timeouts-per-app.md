@@ -5,6 +5,8 @@ Related: [ADR 0049](0049-connect-order-consumer-error-handler.md), [ADR 0051](00
 
 Follow-up (retry): 아래 "약 63초 뒤 중단"은 당시 재시도(1초·2초 두 번) 기준이다. 이후 [ADR 0053](0053-retry-transient-consumer-failures-for-minutes-before-stopping.md)에서 재시도를 간격의 합 5분으로 바꿨다. 한 시도는 여전히 약 20초 안에 예외로 끝나고, 한 간격(최대 30초)을 더해도 poll 사이가 `max.poll.interval.ms` 2분 안이다. 이 결정은 Accepted를 유지한다.
 
+Correction: 아래 본문과 위 Follow-up의 `max.poll.interval.ms` 2분은 공유 batch factory의 값이다. 주문 listener는 기본 5분을 쓴다([실효 시간 확인](../week6/kafka-settings-experiments.md#dlt-timeout-experiment)). 아래 본문은 결정 당시 기록으로 보존한다.
+
 ## Context
 
 ADR 0049의 오류 처리기는 **예외가 나야** 1초·2초 재시도와 listener 중단을 시작한다. DB 장애에는 두 종류가 있다.
