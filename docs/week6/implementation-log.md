@@ -12,11 +12,11 @@
 | 발행 순서·연결 | `AFTER_COMMIT` listener·발행 인터페이스 호출 구현 | [준비·커밋 후 호출 구현](#after-commit-boundary), [설계](design.md#publish-after-commit) |
 | 실제 Kafka 전송 | 구현·격리 broker 검증 | 최종 JSON·실제 record·재전송·성공 metadata·오류 관찰 구현. 기본값·test는 발행 꺼짐, local profile에서 켬([27절](#local-topics-and-activation)) |
 | 구매 활동 DB 저장 | 완료 기록과 모든 품목의 원자적 저장·동일 사실 no-op·충돌·동시 경쟁 복구 구현 | [DB 멱등 처리](#idempotent-purchase-handling). 실제 listener·ack·오류 처리기 연결은 [23절](#order-listener-wiring)·[26절](#consumer-error-handler) |
-| 수신 기본 준비 | parser·어댑터·조건부 주문용 record factory·@KafkaListener→DB→ack 연결. 기본값·test는 자동 구독 0개, local profile에서 주문 listener(concurrency 3) | [실제 listener 연결](#order-listener-wiring), 업무용 error handler [26절](#consumer-error-handler), 로컬 활성화 [27절](#local-topics-and-activation). 운영 배포별 consumer 수는 정하지 않음 |
-| 주문용 ack | 별도 factory의 MANUAL_IMMEDIATE와 실제 listener·어댑터 연결 | [연결 기록](#order-listener-wiring). 이후 전체 검사는 아래 행 |
+| 수신 기본 준비 | parser·어댑터·조건부 주문용 record factory·@KafkaListener→DB→정상 반환→BATCH 위치 기록 연결. 기본값·test는 자동 구독 0개, local profile에서 주문 listener(concurrency 3) | [실제 listener 연결](#order-listener-wiring), 업무용 error handler [26절](#consumer-error-handler), 로컬 활성화 [27절](#local-topics-and-activation). 운영 배포별 consumer 수는 정하지 않음 |
+| 주문용 ack | BATCH 채택·실제 listener 한 인자 경로·업무용 오류 처리기 연결. DB 완료 뒤 정상 반환, 위치는 container가 관리 | [ADR 0054](../adr/0054-commit-order-consumer-offsets-per-poll.md), [업무용 검증 37절](#batch-adoption). 과거 MI·비교 기록은 보존 |
 | 사실 충돌의 소비 대응 | 기존 사실 유지·DLQ 분리 후 정상 주문 계속 처리. 업무용 error handler 연결·실제 listener 검증 | [ADR 0047](../adr/0047-quarantine-conflicting-order-confirmation-facts.md), [채택 기록](#conflicting-fact-adoption). 비교 결과는 21절에 보존 |
 | DLQ 전송 실패의 복구 | 원본 offset 보호·listener 전체 중단·사람의 원인 해결 후 같은 group 재시작. 업무용 error handler 연결·실제 listener 검증 | [ADR 0048](../adr/0048-stop-consumption-on-dlq-publication-failure-and-resume-manually.md), [선택 기록](#dlq-failure-manual-recovery) |
-| 주문 기능 검증 | DB·PG→내부 이벤트→실제 Kafka record, DB handler 멱등성·DB commit 뒤 미커밋 재전달, 두 앱을 잇는 미발행/정상 사례 | 최신 전체 회귀 API 524·streamer 88·Kafka 모듈 7건 통과([31절](#db-driver-timeouts)), 재시도 변경 뒤 streamer 88건 재통과([34절](#long-consumer-retry)). 사례 2건은 [28절](#w6-delivery-cases) |
+| 주문 기능 검증 | DB·PG→내부 이벤트→실제 Kafka record, DB handler 멱등성·DB commit 뒤 미커밋 재전달, 두 앱을 잇는 미발행/정상 사례 | 현재 변경: streamer 전체 90건·지연 DLT experiment 1건·main/test Checkstyle·ArchUnit 통과([37절](#batch-adoption)). API 524·Kafka 모듈 7건은 [31절](#db-driver-timeouts)의 이전 실행이며 이번에 재실행하지 않음. 두 앱 사례는 [28절](#w6-delivery-cases) |
 | Kafka 설정 비교·재전달 | 선택한 재시도·DLQ·3개 partition/consumer·복제 장애 조합의 격리 검증 완료. Compose 적용은 27절 | [선택한 설정 검증](#selected-settings-verification)(당시 streamer 70건·Kafka 모듈 5건). `min.insync` 1·2의 유실 비교는 [33절](#min-isr-loss-experiment). 과거 개별 실행은 각 절에 보존 |
 | 주문용 error handler | 메시지 오류·충돌 DLQ, 그 밖의 오류는 1초부터 2배·최대 30초·합 5분 재시도 뒤 중단, DLQ 실패 중단 | [26절](#consumer-error-handler), 재시도 변경은 [34절](#long-consumer-retry) |
 | DB 드라이버 timeout·producer 대기 | 두 앱 `connectTimeout` 3초·`socketTimeout` 10초, `max.block.ms` 5초 측정 | [31절](#db-driver-timeouts)·[32절](#max-block-measurement) |
@@ -825,6 +825,8 @@ ADR 0048을 Accepted로 추가하고 ADR 0041·0047은 본문을 보존한 채 �
 
 DLQ 전송 결과 대기는 10초다. 기다리는 동안 consumer 스레드가 멈추므로 `max.poll.interval.ms` 2분보다 짧게 두었다. 업무용 활성화 flag(`consumer.enabled=false`)와 YAML·Compose는 바꾸지 않았다.
 
+위 문장은 당시의 해석이다. 이후 [36절](#dlt-timeout-verification)에서 10초가 최소 결과 대기이고 실제 예산은 125초, 주문용 poll 제한은 기본 5분임을 확인했다. 이 과거 기록은 보존하고 현재 설명을 설계에 정정했다.
+
 ### 실제 검증
 
 `OrderConfirmedKafkaErrorHandlingIntegrationTest`는 실제 Kafka 3.5.1·MySQL 8.0, 실제 `@KafkaListener`·주문용 factory·새 오류 처리기를 쓴다. 고유 topic(partition 1·RF1)과 같은 이름의 `-dlt` topic, group `purchase-activity`, concurrency 1이다. 한 테스트에서 세 단계를 이어서 확인했다.
@@ -1054,6 +1056,171 @@ ADR 0051의 5초가 실제로 무엇을 묶는지 측정했다. `ProducerMaxBloc
 | 4. DLQ 전송 실패 | 그대로: 멈춤·offset 8 유지 → 복구 뒤 DLQ에 원본 offset 8, offset 10 |
 
 관련 4클래스(이 통합 테스트, 준비 설정 2, 주문 설정 3, ArchUnit 1)와 streamer Checkstyle main/test 통과. pause를 뺀 뒤 다시 실행해도 통과했다. 이어서 `commerce-streamer:check` 전체 88건 통과(실패·오류·skip 0, Checkstyle 위반 0, BUILD SUCCESSFUL 5분 31초). commerce-api와 Kafka 모듈은 이 변경에 영향이 없어 다시 돌리지 않았다. 운영 값(5분)으로 직접 돌리지 않았고 실제 DB 서버 중단은 재현하지 않았다. 재시도 중 rebalance가 겹칠 때 재시도 추적이 새로 시작되는지는 확인하지 않았다.
+
+<a id="batch-ack-comparison"></a>
+
+## 35. BATCH / MANUAL_IMMEDIATE의 재전달 범위와 DB 효과 비교
+
+사용자는 강의 로그 파이프라인 개선 글을 참고해, 멱등한 동기 DB 처리에서 BATCH와 MANUAL_IMMEDIATE를 비교하도록 했다. 현재 업무용 MI 설정·listener·오류 처리기·DB 정책은 유지하고 `KafkaBatchAckExperimentTest`만 추가했다. 기존 20절은 MANUAL과 MI의 비교이며 이번은 BATCH와 MI의 비교다.
+
+실제 Kafka 3.5.1·MySQL 8.0 Testcontainers, 고유 topic/group·partition 1·RF1·consumer 1개를 사용했다. 주문 42·43·44 세 건을 먼저 발행하고 `max.poll.records=3`, 첫 listener의 실제 position=3을 확인했다. 두 후보 모두 기존 main 어댑터·DB handler를 사용한다. BATCH는 handle(record), MI는 handle(record, acknowledgment)로 DB 처리 뒤 ack한다. record listener를 유지하고 주문마다 하나의 DB TX를 사용한다.
+
+첫 주문 DB commit 뒤, MI는 ack도 마친 다음, listener 정상 반환 전 같은 hook 예외와 CommonContainerStoppingErrorHandler로 중단했다. 새 container가 같은 group으로 seek·offset 재설정·추가 발행 없이 이어 읽는다.
+
+| 관찰 | BATCH | MANUAL_IMMEDIATE |
+| --- | --- | --- |
+| 첫 poll position | 3 | 3 |
+| 첫 주문 DB commit 뒤·중단 뒤 committed offset | 0·0 | 1·1 |
+| 중단 시 DB | 완료 기록 1·활동 2 | 완료 기록 1·활동 2 |
+| 재시작 후 listener에 전달된 offset | 0·1·2 | 1·2 |
+| 최종 committed offset | 3 | 3 |
+| 최종 DB | 완료 기록 3·활동 6 | 완료 기록 3·활동 6 |
+| 저장 포트 호출 합계 | 완료 3·활동 6 | 완료 3·활동 6 |
+| 기존 주문 42의 행·수량·시각·완료 snapshot | 유지 | 유지 |
+| Kafka 끝 offset | 3 | 3 |
+
+BATCH는 이미 저장된 주문 42를 다시 받지만 기존 동일 사실 no-op으로 추가 저장하지 않는다. 이번 조건에서 MI는 재전달 범위를 줄였고, DB 중복 효과를 막은 것은 기존 멱등 처리다. commit 호출 수·처리량·지연을 측정하지 않았으며 업무용 BATCH와 retry/DLQ를 결합한 검증도 아니다. 첫 listener 반환을 막는 hook이므로 OS 강제 종료로 표현하지 않는다. 조건·가로 흐름·선택 대기는 [실험 11절](kafka-settings-experiments.md#batch-ack-experiment)에 정리했고 blog-draft에도 같은 결과와 한계를 반영했다.
+
+### 실행 검증
+
+```bash
+env DOCKER_HOST=unix:///Users/johyeon-a/.docker/run/docker.sock \
+  JAVA_TOOL_OPTIONS=-Dapi.version=1.44 \
+  JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
+  PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH \
+  ./gradlew :apps:commerce-streamer:test \
+    --tests '*KafkaBatchAckExperimentTest' \
+    --tests '*KafkaManualAckExperimentTest' \
+    --tests '*LayeredArchitectureTest' \
+    :apps:commerce-streamer:checkstyleMain \
+    :apps:commerce-streamer:checkstyleTest --offline
+```
+
+| 검사 | 최종 실행 결과 |
+| --- | --- |
+| KafkaBatchAckExperimentTest | 새 비교 2건 통과 |
+| KafkaManualAckExperimentTest | 기존 ack 경계·DB 실패/복구·재전달 5건 통과 |
+| LayeredArchitectureTest | ArchUnit 1건 통과 |
+| 합계 | 8건, 실패·오류·skip 0 |
+| Checkstyle | main UP-TO-DATE·test 실행 통과, 보고서 위반 0 |
+| Gradle | BUILD SUCCESSFUL·1분 27초 |
+
+초기 실행도 8건·Checkstyle 통과(1분 31초)였다. 정적 검토에서 MI의 commit이 관찰 callback보다 먼저 보일 수 있는 경쟁을 찾아, 재시작 완료를 기다릴 때 최종 offset과 수신 목록을 함께 검사하도록 보강했다. 위 값은 그 최종 코드로 다시 실행한 결과다. 이전 전체 회귀 API 524·streamer 88·Kafka 모듈 7건은 이번에 재실행하지 않았다.
+
+commerce-change-review 기준으로 실제 poll의 크기, 정상 DB TX 완료·중단 hook·미커밋 재전달·같은 group 재시작·행 불변·저장 호출 수와 현재 주차 문서를 대조했다. 이번 비교 범위에서 추가 수정이 필요한 계약 위반은 발견하지 않았다. 업무용 값 변경을 채택하지 않았으므로 기존 ADR 본문·상태는 변경하지 않았다.
+
+<a id="dlt-timeout-verification"></a>
+
+## 36. DLT 지연 실패의 실제 대기·원본 위치·복구 검증
+
+사용자는 즉시 거절되는 DLT 크기 초과와 달리, 재시도 가능한 거절로 늦게 실패하는 경우를 확인하도록 했다. OrderConfirmedDlqTimeoutExperimentTest를 experiment 태그로 추가했다. 업무용 설정은 바꾸지 않고 실제 @KafkaListener·오류 처리기·DB handler에 격리 Kafka·MySQL을 연결했다.
+
+원본 topic은 정상이며 DLT만 RF1·최소 ISR2로 만들어 writes를 NotEnoughReplicas로 거절시켰다. 형식 오류 offset 0과 정상 주문 43(offset 1)을 미리 발행했다. 업무용 기본 delivery timeout 120초·최소 결과 대기 10초를 유지했다. 실제 factory 설정과 KafkaConfig를 확인해 주문용 poll 제한 300초, recoverer의 결과 대기 예산 125초도 검증했다.
+
+- 수신 후 12초에도 listener는 실행 중이고 producer record-retry-total은 13이었다. 원본 offset 0·DB 0·DLT 0을 유지했고 뒤 주문은 처리하지 않았다.
+- 첫 수신부터 120,118ms 뒤 listener가 중단됐다. 재시도 지표는 121, 원본 offset 0·DB 0·DLT 0이었다.
+- DLT 최소 ISR을 1로 돌리고 producer 재생성 후 같은 group으로 시작했다. 전체 listener 수신 offset 0·0·1, 최종 committed offset 2·DLT 1·완료 기록 1·활동 2를 확인했다. DLT의 원문 key·bytes·원본 topic·offset·group도 대조했다.
+
+복구의 producer 재생성은 factory.reset()으로 앱 재시작 일부를 모사한 것이다. container.start만으로 같은 만료 producer가 회복한다고 주장하지 않는다. broker 무응답·네트워크 분할·OS 종료·여러 consumer의 중단 범위도 이번 실행으로 증명하지 않는다. 상세 조건·선택 대기는 [실험 12절](kafka-settings-experiments.md#dlt-timeout-experiment)에 둔다.
+
+### 실행 결과
+
+```bash
+env DOCKER_HOST=unix:///Users/johyeon-a/.docker/run/docker.sock \
+  JAVA_TOOL_OPTIONS=-Dapi.version=1.44 \
+  JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
+  PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH \
+  ./gradlew :apps:commerce-streamer:experimentTest \
+    --tests '*OrderConfirmedDlqTimeoutExperimentTest' \
+    :apps:commerce-streamer:test --tests '*LayeredArchitectureTest' \
+    :apps:commerce-streamer:checkstyleMain :apps:commerce-streamer:checkstyleTest --offline
+```
+
+새 experiment 1건·ArchUnit 1건, 실패·오류·skip 0. main Checkstyle UP-TO-DATE·test Checkstyle 실행 통과, 위반 0, BUILD SUCCESSFUL·2분 45초였다. 앞선 BATCH 비교의 8건과 전체 회귀를 이번에 다시 돌린 것은 아니다.
+
+기존 코드의 “10초 상한”과 “주문용 poll 제한 2분” 주석을 현재 실제 동작에 맞게 정정했고, 현재 설계도 함께 고쳤다. 행동·YAML 값은 변경하지 않았다. 기존 ADR 0049·0053은 결정 본문을 보존하고 상단에 검증 결과와 현재 설명 링크만 추가했다. 시간 기준을 새로 채택한 것이 아니므로 새 ADR은 만들지 않았다.
+
+commerce-change-review 기준으로 즉시 거절과 producer 재시도 소진의 차이, 완료 전 원본 위치 보호, 중단 뒤 같은 group 재수신, producer 재생성의 복구 범위와 현재 주차 문서를 대조했다. 실제 오류가 정해진 값보다 오래 걸린 사실은 기록하되, 10초 상한을 새로 구현한 것으로 표현하지 않았다.
+
+주석 정정 뒤에는 ArchUnit 1건·main/test Checkstyle을 다시 실행해 모두 통과했다(BUILD SUCCESSFUL·13초). 행동이 달라지지 않은 주석 정정이므로 약 2분이 필요한 native timeout 실험을 반복하지 않았다.
+
+<a id="batch-adoption"></a>
+
+## 37. 주문용 BATCH 채택과 실제 listener·오류 처리기 검증
+
+사용자가 BATCH/MI 비교와 재전달 비용을 검토한 뒤 BATCH로 변경하기로 했다. [ADR 0054](../adr/0054-commit-order-consumer-offsets-per-poll.md)를 추가하고 ADR 0046은 Superseded, 오류 처리 정책이 유효한 ADR 0049는 Accepted로 유지하면서 상단에 후속 링크를 표시했다. 관련 기존 ADR의 결정 본문은 SHA-256 비교로 보존을 확인했다. ADR 0040·0041·0044·0045의 상단 후속 링크도 현재 BATCH 결정으로 연결하고 본문은 보존했다. 작업 날짜는 ADR에 추가하지 않았다.
+
+### 변경과 책임
+
+- 주문용 factory의 ack mode만 BATCH로 바꿨다. record listener·주문별 동기 DB TX·자동 commit 끔·동기 commit·배정 commit 끔·earliest·concurrency 계약은 유지한다.
+- 실제 listener는 Acknowledgment를 받지 않고 어댑터의 handle(record)를 호출한다. DB commit 또는 검증된 동일 사실 no-op 뒤 정상 반환하며, 위치는 container가 poll 처리 경계에서 기록한다. 예외를 잡아 성공으로 반환하지 않는다.
+- 실제 DefaultErrorHandler를 ackAfterHandle=true·commitRecovered=false로 연결했다. DLT 성공 뒤 정상 반환한 record의 위치는 container가 관리하고, DLT 실패·DB 재시도 소진은 기존 중단 handler가 예외로 끝내 실패 record를 지나지 않는다.
+- 수신 어댑터의 두 인자 메서드는 과거 MANUAL/MI 비교 실험용으로 남겼고 업무용 listener는 사용하지 않는다. 기존 비교 테스트·공유 demo용 MANUAL factory는 유지했다.
+- broker·producer·DB 모델·재시도 시간·DLT 결과 대기 예산은 바꾸지 않았다. BATCH는 묶음 listener·묶음 DB insert로 바꾸는 결정이 아니다.
+
+### 기대값부터 변경해 확인한 red
+
+OrderConfirmedKafkaConfigurationTest의 주문용 기대값을 BATCH로 먼저 바꾼 뒤 실행했다. 설정 3건과 자동 포함 ArchUnit 1건 중 해당 설정 1건만 실패했다(expected BATCH, actual MANUAL_IMMEDIATE, BUILD FAILED·10초). 이후 구현을 변경했다. 기대값이나 검사 규칙을 완화하지 않았다.
+
+### 실제 listener의 정상·중복·미커밋 재전달
+
+기존 OrderConfirmedKafkaListenerIntegrationTest를 확장했다. Kafka 3.5.1·MySQL 8.0·partition 1·RF1·consumer 1개, 실제 factory·@KafkaListener·parser·DB handler를 사용한다. 정상 42(offset 0)·동일 사실 재발행(offset 1)을 반영한 뒤 43(offset 2)의 DB commit 직후 listener 반환 전에서 대기했다. DB TX 비활성과 위치 2·완료 2·활동 4를 확인하고 통제된 예외로 중단했다.
+
+같은 group으로 다시 시작하자 offset 2가 재전달됐다. 완료/활동 행 ID·수량은 같았고 위치만 3으로 진행했다. 보고 값은 committedOffsets=[0,1,2,2,2,3]·replayedOffsets=[2,2]·완료 2·활동 4다. 중단 hook은 테스트 전용 stopping handler를 사용하므로 업무용 오류 분류 검증과 구분한다.
+
+### 실제 업무용 오류 처리기의 실패·복구
+
+OrderConfirmedKafkaErrorHandlingIntegrationTest는 현재 BATCH factory·listener와 실제 업무용 오류 처리기를 사용해 기존 기대값을 유지한 채 통과했다. 재시도 관찰 값은 테스트용 0.5초부터 최대 2초·누적 대기 10초이며 운영의 누적 대기 5분을 그대로 실행한 것은 아니다.
+
+| 장면 | 확인한 결과 |
+| --- | --- |
+| 정상 42·수량 충돌·깨진 JSON·정상 43 | 충돌/JSON만 DLT(원본 offset 1·2), DB는 정상 두 주문, 위치 4 |
+| 44의 저장 호출이 6초 실패·정상 45 | 수동 재시작 없이 둘 다 반영·위치 6·중간 revoke 0 |
+| 46이 계속 실패·정상 47 | 중단 시 위치 6·46/47 미반영. 원인 제거·같은 group 재시작 뒤 위치 8·둘 다 반영 |
+| DLT가 offset 8을 크기 제한으로 거절·정상 48 | 중단 시 위치 8·48 미반영. 제한 복구·재시작 뒤 DLT 보존·48 반영·위치 10 |
+
+DB 장애는 저장 호출에서 예외를 만드는 방식이다. DB 서버 종료·운영 다중 consumer 장애나 OS 강제 종료와 구분한다.
+
+### BATCH에서도 native DLT 지연 실패 확인
+
+OrderConfirmedDlqTimeoutExperimentTest를 현재 BATCH로 다시 실행했다. source는 정상이고 DLT만 최소 ISR 2·실제 ISR 1로 만들어 producer가 재시도하게 했다. 기본 delivery timeout 120초·recoverer 결과 대기 예산 125초·주문용 poll 제한 300초는 유지했다.
+
+| 관찰 | 결과 |
+| --- | --- |
+| 12초 시점 | producer 재시도 13회·listener 실행 중·원본 위치 0·DB 0·DLT 0 |
+| 중단 시점 | 첫 수신 뒤 120,159ms·producer 재시도 120회·원본 위치 0·DB 0·DLT 0 |
+| 복구 | DLT 최소 ISR 복구·producer 재생성·같은 group 재시작 |
+| 전체 수신/최종 | offset 0·0·1, 원본 위치 2·DLT 1·완료 1·활동 2, 원문/출처 일치 |
+
+36절의 이전 MI 값(120,118ms)은 당시 기록으로 보존했다. producer factory reset은 앱 재시작 중 producer 재생성을 모사하며 container.start만의 복구를 증명하지 않는다. 모든 timeout이 DLT 미저장을 뜻하거나 재전송이 정확히 한 번이라는 보장도 아니다. 이 실행에서는 시간 기준 선택을 대기로 남겼고, 이후 기본 대기를 받아들인 결정은 38절과 ADR 0055에 기록했다.
+
+### 최종 실행과 문서 대조
+
+```bash
+env DOCKER_HOST=unix:///Users/johyeon-a/.docker/run/docker.sock \
+  JAVA_TOOL_OPTIONS=-Dapi.version=1.44 \
+  JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
+  PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH \
+  ./gradlew :apps:commerce-streamer:check \
+    :apps:commerce-streamer:experimentTest --tests '*OrderConfirmedDlqTimeoutExperimentTest' \
+    --offline --no-parallel
+```
+
+- streamer 정규 전체 90건(ArchUnit 포함)·별도 지연 DLT experiment 1건, 실패·오류·skip 모두 0.
+- main/test Checkstyle 모두 실행·위반 0. BUILD SUCCESSFUL·8분 35초.
+- API·Kafka 모듈 전체 검사와 두 앱 W6 외부 클러스터 사례는 이번 변경에서 재실행하지 않았다. 해당 검사는 과거 절의 당시 결과로 보존한다.
+
+commerce-change-review 기준으로 정상 반환 전 DB 완료, 동일 사실 no-op, BATCH와 DLT 복구 commit 연결, 재시도/중단 시 실패 offset 보호와 같은 group 복구를 호출 경로·실제 결과와 대조했다. 변경 범위에서 추가 결함은 발견하지 않았다. 여러 consumer에서 listener 전체 중단·rebalance 경쟁·운영 5분 값 그대로의 실행·처리량은 미검증이다. framework 기본 비재시도 예외 분류는 변경하지 않았으므로 모든 예외가 동일 기간 재시도된다고 일반화하지 않는다.
+
+현재 설계·실험 상태 표·blog-draft의 선택과 멘토 질문을 BATCH에 맞췄다. study·설정 선택 노트의 현재 ack 표기도 갱신하고 기존 계획·학습 결과에는 당시 조건과 현재 결정의 연결 설명을 남겼다. 과거 비교 결과와 채택 ADR 본문은 보존했다. 블로그에는 구현 설명 대신 “다시 읽어도 구매가 늘지 않으므로 직접 완료 표시 대신 묶음 위치 기록을 선택했다”는 사고 흐름을 남겼고, 성능 우위를 측정했다고 적지 않았다.
+
+<a id="dlt-wait-decision"></a>
+
+## 38. DLT 전송 대기를 기본값으로 두기로 결정
+
+36절의 지연 실패 결과를 놓고, DLT producer의 delivery timeout을 줄일지 검토했다. 사용자는 기본 120초를 받아들이기로 했다. 재시도 가능한 DLT 실패는 메시지 문제와 DLT 장애가 겹치는 드문 경우이고, 멈추면 사람이 재시작해야 하는 비용이 최대 2분 지연보다 크며, 어느 쪽이든 원본은 지킨다는 이유다. [ADR 0055](../adr/0055-accept-default-delivery-timeout-for-dead-letter-publishing.md)을 추가했다.
+
+동작은 바뀌지 않는다. 코드는 주석의 참조만 고쳤고 새 테스트를 실행하지 않았다. ADR 0051은 본문을 보존하고 상단에 "10초" 문장의 정정을 표시했다. design.md와 실험 12절의 선택 대기 표기를 결정으로 맞췄다.
 
 ## 아직 검증하지 않은 것
 

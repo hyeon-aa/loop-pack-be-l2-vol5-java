@@ -9,10 +9,12 @@ Kafka 설정을 하나씩 바꿨을 때 실제 동작이 어떻게 달라지는�
 | [첫 읽기 위치](#initial-offset-experiment) | 새 group의 earliest/latest와 기존 group의 저장 위치 우선 | earliest를 주문용 factory에 반영 |
 | [같은 group의 consumer 수](#consumer-count-experiment) | partition 2개에서 consumer 1·2·3개 배정. 이후 [3개·3개 실제 저장](#three-consumer-purchase-experiment)도 검증 | `order-events` partition 3개, 로컬 streamer 1대·concurrency 3으로 적용 |
 | [DB 저장 실패 처리](#failure-handling-experiment) | 기존 방식 비교 뒤 [선택한 2회·1초/2초·중단 조합](#selected-db-retry-experiment) 검증 | 당시 2회·1초/2초를 채택했다가 ADR 0053에서 1초부터 2배·최대 30초·합 5분으로 바꿔 업무용 오류 처리기에 연결 |
-| [DB 저장 완료 후 재전달](#db-commit-replay-experiment) | 저장 성공 뒤 offset commit 전 중단·같은 record 재수신·추가 저장 없음 | MANUAL_IMMEDIATE·동일 사실 no-op으로 업무용 listener에 연결 |
+| [DB 저장 완료 후 재전달](#db-commit-replay-experiment) | 저장 성공 뒤 offset commit 전 중단·같은 record 재수신·추가 저장 없음 | 당시 RECORD·MI 검증을 보존. 현재 BATCH·동일 사실 no-op으로 연결([13절](#batch-adoption-verification)) |
 | [메시지 오류 DLQ](#dlq-delivery-experiment) | 실제 DLQ 발행 성공·거절·복구와 원본 offset 보호 | `order-events-dlt`로 업무용 오류 처리기에 연결, 전송 실패 시 중단 |
 | [복제와 broker 장애](#replication-failure-experiment) | 데이터 broker 1대 중단·리더 교체·ISR 1 쓰기 거절·복구·내부 offset 복제 | 로컬 Compose에 적용(ADR 0050). `min.insync` 1·2의 유실 비교는 [구현 기록 33절](implementation-log.md#min-isr-loss-experiment) |
-| [consumer ack](#manual-ack-experiment) | MANUAL/IMMEDIATE의 ack 직후 위치, DB 실패·복구, IMMEDIATE의 no-op 재전달 | MI를 실제 factory/listener에 반영, 업무용 오류 처리기와 결합 |
+| [consumer ack](#manual-ack-experiment) | MANUAL/IMMEDIATE의 ack 직후 위치, DB 실패·복구, IMMEDIATE의 no-op 재전달 | 당시 MI 채택·연결 기록. 현재 BATCH로 대체(ADR 0054) |
+| [BATCH / MANUAL_IMMEDIATE](#batch-ack-experiment) | 한 poll의 첫 주문 DB commit 뒤 중단, 재시작 시 재전달 범위와 최종 구매 활동 비교 | 사용자 선택으로 BATCH 적용. [ADR 0054](../adr/0054-commit-order-consumer-offsets-per-poll.md)·[업무용 검증](#batch-adoption-verification) |
+| [DLT 지연 실패](#dlt-timeout-experiment) | 재시도 가능한 실제 거절로 약 120.1초 대기·원본 위치 보호·중단·복구 확인 | 실효값 확인 완료. 기본 대기를 받아들임([ADR 0055](../adr/0055-accept-default-delivery-timeout-for-dead-letter-publishing.md)) |
 | [같은 이벤트의 사실 충돌](#conflicting-fact-experiment) | 기존 수량 유지, DLQ 후 정상 주문 진행 / 중단·같은 충돌 재수신 비교 | DLQ 분리 후 계속 처리, 업무용 오류 처리기에 연결 |
 
 실험은 업무용 클러스터와 분리한 Testcontainers 환경에서 했다. 실험용 partition 수·consumer 수·timeout을 업무용 설정으로 채택한 것은 아니다. 새 비교도 한 번에 한 항목만 진행한다.
@@ -28,16 +30,16 @@ Kafka 설정을 하나씩 바꿨을 때 실제 동작이 어떻게 달라지는�
 | earliest | 실제 Kafka의 reset 비교와 실제 주문용 factory의 실효 earliest 설정 확인 | 운영 배포. 로컬 활성화·실패 정책 연결은 완료 |
 | partition 3개·같은 group 전체 consumer 3개 | [3개 멤버가 partition을 하나씩 맡고 실제 DB 저장·같은 group 재시작](#three-consumer-purchase-experiment) | 처리량·lag·부하 측정, 운영 배포 구성 |
 | (당시) DB 재시도 2회·1초/2초·소진 시 중단 → (현재, ADR 0053) 1초부터 2배·최대 30초·합 5분 뒤 중단 | 당시 값: [세 번째 시도 성공 / 세 번 실패 뒤 중단](#selected-db-retry-experiment). 현재 값의 동작은 짧은 값으로 실제 listener에서 검증([구현 기록 34절](implementation-log.md#long-consumer-retry)) | 실제 DB 서버 중단, 운영 값(5분) 그대로의 실행 |
-| 메시지 자체 오류는 DLQ | [실제 broker의 발행 성공·거절, 미확인 시 offset 보호, 원문·출처 보존, 업무 완료 미생성](#dlq-delivery-experiment) | 보존·관찰·운영 재처리. MI와 업무용 handler의 결합은 [구현 기록 26절](implementation-log.md#consumer-error-handler)에서 검증 |
+| 메시지 자체 오류는 DLQ | [실제 broker의 발행 성공·거절, 미확인 시 offset 보호, 원문·출처 보존, 업무 완료 미생성](#dlq-delivery-experiment) | 보존·관찰·운영 재처리. 현재 BATCH와 업무용 handler 결합은 [13절](#batch-adoption-verification), 당시 MI 결과는 26절에 보존 |
 | group.id=purchase-activity | [격리 멤버 3개의 재시작](#three-consumer-purchase-experiment), 실제 annotation listener의 동일 group 정상/논리적 중복 처리 | 운영 배포. 이름 자체의 성능 비교는 필요 없음 |
 | 복제 수 3·min ISR 2·acks=all | [실제 데이터 broker 3대에서 1대 장애·리더 교체 후 성공, ISR 1 거절·복구 후 기존 기록 유지](#replication-failure-experiment) | 로컬 Compose 반영 완료. KRaft controller quorum 장애는 미검증 |
 | broker 자동 생성 끔·내부 offset 복제 수 3 | [격리 broker 3대의 실효값 조회, 실제 __consumer_offsets의 모든 partition RF3·ISR3 및 복구 후 commit 1 유지](#replication-failure-experiment) | 로컬 Compose·init 적용 완료, 실제 `__consumer_offsets` RF3 확인 |
 | 완료 기록·활동의 같은 DB TX와 동일 사실 no-op | 실제 MySQL rollback·유일 제약 경쟁과 실제 Kafka의 DB commit 뒤 재전달·기존 행 유지 | 업무용 listener·ack·오류 처리기에 연결 완료 |
-| 주문용 MANUAL_IMMEDIATE | [ack 경계/실패/재전달](#manual-ack-experiment)과 [충돌 DLQ 후보](#conflicting-fact-experiment), 실제 factory/listener의 정상·논리적 중복 검증 | 업무용 오류 처리기와 결합 검증 완료. 운영 배포 |
+| 주문용 BATCH | [BATCH/MI 비교](#batch-ack-experiment), 실제 listener의 정상·논리적 중복·같은 offset 재전달과 업무용 오류 처리기의 실패·복구([13절](#batch-adoption-verification)) | 코드·설정 적용 완료. 운영 다중 consumer 배포·성능은 미검증 |
 
 같은 eventId로 다른 수량이 온 충돌은 [10절](#conflicting-fact-experiment)의 비교 후 DLQ 분리·정상 주문 계속 처리로 선택했다([ADR 0047](../adr/0047-quarantine-conflicting-order-confirmation-facts.md)). 기존 사실을 덮어쓰지 않는 DB 규칙은 유지하며 업무용 오류 처리기에서 DLQ로 분류한다(ADR 0049). 비교 결과와 이후 채택을 구분한다.
 
-group 이름은 [ADR 0045](../adr/0045-use-purchase-activity-consumer-group.md)의 purchase-activity이며 실제 주문용 listener에도 연결했다. 기본값·test profile은 자동 구독 0개이고, local profile에서만 켠다. 업무용 오류 처리기·topic 생성은 적용했다. 기존 실험의 topic/group 이름과 수치는 당시 격리 조건으로 보존한다. 실제 annotation listener 정상 경로의 최신 검사는 [구현 기록 23절](implementation-log.md#order-listener-wiring)에 별도로 둔다.
+group 이름은 [ADR 0045](../adr/0045-use-purchase-activity-consumer-group.md)의 purchase-activity이며 실제 주문용 listener에도 연결했다. 기본값·test profile은 자동 구독 0개이고, local profile에서만 켠다. 업무용 오류 처리기·topic 생성은 적용했다. 기존 실험의 topic/group 이름과 수치는 당시 격리 조건으로 보존한다. 실제 annotation listener의 현재 BATCH 연결 검사는 [구현 기록 37절](implementation-log.md#batch-adoption)에 둔다. 23절의 기존 MI 실행은 당시 기록이다.
 
 <a id="initial-offset-experiment"></a>
 
@@ -466,7 +468,7 @@ DLQ로 전달한 42에는 DB 처리 완료 기록도 구매 활동도 생기지 
 
 ## 9. MANUAL / MANUAL_IMMEDIATE: 완료 표시와 위치 기록
 
-**선택: MANUAL_IMMEDIATE 채택·격리 검증 완료, 업무용 listener에 연결.** 결정·근거·대안은 [ADR 0046](../adr/0046-acknowledge-order-records-with-manual-immediate.md)에 둔다.
+**당시 선택: MANUAL_IMMEDIATE 채택·격리 검증·업무용 연결. 현재는 BATCH로 대체했다.** 아래 비교 조건과 수치는 당시 기록으로 보존한다. 과거 결정은 [ADR 0046](../adr/0046-acknowledge-order-records-with-manual-immediate.md), 현재 결정은 [ADR 0054](../adr/0054-commit-order-consumer-offsets-per-poll.md), 업무용 검증은 [13절](#batch-adoption-verification)에 둔다.
 
 여기서 ack는 consumer 코드의 acknowledge() 호출이다. producer의 acks=1/all은 Kafka 전송 성공 확인 기준이며 이 항목과 별개다. consumer의 committed offset은 해당 group의 다음 읽을 위치이고 DB의 처리 완료 기록과도 별개다.
 
@@ -566,6 +568,172 @@ MANUAL_IMMEDIATE에서 recover한 record의 위치도 진행시키도록 테스�
 ### 채택한 기준과 대안
 
 DLQ 후보는 충돌 record를 보존하며 정상 주문의 처리를 이어 간다. 원인 분석·경보·DLQ 재처리 경로가 필요하고, 계속 들어오는 다른 이벤트도 신뢰할 수 있는지는 별도로 판단해야 한다. 중단 후보는 해당 consumer의 진행을 멈추고 조사할 수 있지만 같은 범위의 정상 주문도 기다리며 원인 해결·재개 절차가 필요하다. 두 후보 모두 기존 정상 구매 사실을 보호하는 것은 동일하다.
+
+<a id="batch-ack-experiment"></a>
+
+## 11. BATCH / MANUAL_IMMEDIATE: 다시 읽는 범위와 DB 반영 횟수
+
+**후속 선택: 사용자가 BATCH를 선택해 업무용 listener에 적용했다([ADR 0054](../adr/0054-commit-order-consumer-offsets-per-poll.md)).** 아래는 선택 전 비교의 조건·관찰 결과다. 기존 9절은 MANUAL과 MANUAL_IMMEDIATE 비교이고, 이번에는 listener가 정상 반환하면 framework가 진행을 관리하는 BATCH와 비교했다. 현재 업무용 연결 검증은 [13절](#batch-adoption-verification)에 따로 둔다.
+
+### 상황과 시작 동작
+
+| 구분 | 조건 |
+| --- | --- |
+| 환경 | 실제 Kafka 3.5.1·client 3.8.1·Spring Kafka 3.3.4·MySQL 8.0, 업무용 Compose와 분리한 Testcontainers |
+| 입력 | partition 1·RF1의 고유 topic에 주문 42(offset 0)·43(offset 1)·44(offset 2)를 소비 시작 전에 발행 |
+| 주문 한 건 | 상품 7은 5개·상품 8은 3개. 실제 parser·handler·완료 기록과 모든 품목의 같은 DB TX·동일 사실 no-op 사용 |
+| 소비 | 고유 group·consumer 1개, 최초 committed offset 0. 자동 commit 끔·동기 commit·배정 commit 끔·max.poll.records=3 |
+| BATCH 경로 | record listener가 main 어댑터의 handle(record)를 호출. 수동 ack 없이 DB 처리 후 반환하는 경로 |
+| MANUAL_IMMEDIATE 경로 | record listener가 main 어댑터의 handle(record, acknowledgment)를 호출. consumer 스레드에서 DB 처리 후 ack |
+| 중단 | 주문 42의 DB commit 뒤, listener 정상 반환 전 hook에서 예외 발생. MI에서는 ack까지 끝난 지점. 두 조건 모두 CommonContainerStoppingErrorHandler로 중단 |
+| 재시작 | 새로운 container·consumer, 같은 group. seek·offset 재설정·추가 발행 없이 구독 |
+
+BATCH는 **offset commit 방식**이다. 이 실험의 두 listener 모두 record를 한 건씩 처리하고, DB도 주문마다 별도 TX다. batch listener나 여러 주문을 묶는 DB 트랜잭션으로 바꾸지 않았다. 설정값만 보고 세 건을 한 번에 poll했다고 단정하지 않고, 첫 listener에서 실제 consumer position=3인 것도 확인했다.
+
+```text
+미리 저장한 Kafka 기록: 주문 42(offset 0) → 주문 43(offset 1) → 주문 44(offset 2)
+첫 poll: 세 건 수신(position 3) → 주문 42 DB commit → [MI는 ack] → 여기서 중단
+재시작: 같은 group의 실제 committed offset부터 읽기 → 나머지 구매 활동 저장
+```
+
+### 실제 관찰 결과
+
+| 관찰 시점·결과 | BATCH | MANUAL_IMMEDIATE |
+| --- | --- | --- |
+| 첫 poll의 position | 3 | 3 |
+| 중단 전 listener가 처리한 주문 | 42 | 42 |
+| 첫 주문 DB commit 뒤 위치 (MI는 ack 뒤) | committed offset 0 | committed offset 1 |
+| container 중단 뒤 위치 | 0 | 1 |
+| 중단 시 DB | 완료 기록 1·구매 활동 2행 | 완료 기록 1·구매 활동 2행 |
+| 같은 group 재시작 후 받은 record | 42(offset 0)·43(offset 1)·44(offset 2) | 43(offset 1)·44(offset 2) |
+| listener에 전달된 record 횟수 합계 (중단 전·재시작 후) | 4회 | 3회 |
+| 최종 committed offset | 3 | 3 |
+| 최종 DB | 완료 기록 3·구매 활동 6행 | 완료 기록 3·구매 활동 6행 |
+| 실제 저장 포트 호출 합계 | 완료 3회·활동 6회 | 완료 3회·활동 6회 |
+| 기존 주문 42 | 행 ID·수량·확정 시각·완료 snapshot 불변 | 행 ID·수량·확정 시각·완료 snapshot 불변 |
+| Kafka 끝 offset | 3, 추가 발행 없음 | 3, 추가 발행 없음 |
+
+**BATCH는 이미 저장한 주문 42를 한 번 더 읽었지만, DB에 한 번 더 반영하지 않았다.** 기존 완료 기록·사실 대조·no-op 덕분이다. MI는 이번 중단 전에 offset 1을 기록해 주문 42의 재수신을 줄였다. 두 방식의 최종 업무 결과는 같았다.
+
+첫 poll의 position은 두 조건 모두 3이지만 DB에 반영된 주문은 42뿐이었다. position 3을 업무 완료 위치로 착각해 commit하지 않고, 각 ack mode가 정한 경계와 실제 DB 반영을 따로 확인했다.
+
+### 이 비교로 판단할 것
+
+- 이번 조건에서 MI의 이득은 **중단 뒤 다시 읽는 범위를 줄인 것**이다. 구매 활동 중복을 막은 것은 DB handler의 멱등 처리다.
+- MI도 DB commit 뒤 ack 전 중단에서는 재전달이 남는다. 9절의 기존 실험에서 확인했으며 이번 결과로 그 빈틈이 사라지지 않는다.
+- 동기 DB 처리가 정상 반환한 뒤 framework가 commit하는 BATCH도 비교할 수 있다. 명시적 ack가 없다는 이유만으로 DB 저장 전에 무조건 commit하는 방식은 아니다.
+- 비교 뒤 BATCH를 선택하고 listener의 수동 ack 인자를 제거했다. 전용 오류 처리기의 DLT 성공은 container의 완료 위치 관리에 연결하고, 실패·재시도 소진 시 예외로 멈추는 정책은 유지했다. 실제 업무용 경로는 [13절](#batch-adoption-verification)에서 검증했다.
+
+### 검증 범위와 Evidence
+
+[KafkaBatchAckExperimentTest](../../apps/commerce-streamer/src/test/java/com/loopers/kafka/KafkaBatchAckExperimentTest.java)의 두 조건에서 정상 DB 저장·중단 시 위치·같은 group 재전달·기존 행 불변·추가 저장 없음과 후속 주문 저장을 검사한다. 재시작의 MI commit이 관찰 callback보다 먼저 보일 수 있어, 최종 offset과 수신 목록이 모두 도달할 때까지 유한하게 기다린다. 실제 명령·검사 결과는 [구현 기록 35절](implementation-log.md#batch-ack-comparison)에 둔다.
+
+이 중단은 **첫 record의 DB 처리 후 listener가 정상 반환하기 전**에 넣은 hook이다. OS 강제 종료나 실제 DB 장애는 아니다. 한 partition·consumer 1개·record 3개의 결과로 재전달 빈도·성능을 일반화하지 않는다. commit 호출 수·처리량·지연·DB 조회 비용은 측정하지 않았으므로 BATCH가 더 빠르다거나 MI의 비용이 더 크다고 실행 결과로 주장하지 않는다. 이 비교 자체는 업무용 BATCH와 retry/DLT 조합·rebalance·운영 부하를 검증하지 않았다. 후속 업무용 연결 검사는 13절과 구분한다.
+
+동작 비교는 [Spring Kafka commit 방식](https://docs.spring.io/spring-kafka/reference/3.3/kafka/receiving-messages/message-listener-container.html#committing-offsets)과 [중단 error handler](https://docs.spring.io/spring-kafka/reference/3.3/kafka/annotation-error-handling.html#container-stopping-error-handlers)를 참고했다. 실험 계기는 [강의 로그 파이프라인 개선기](https://velog.io/@seeun0210/%EC%96%B4%EB%8A%90-%EC%9D%B8%ED%84%B4%EC%9D%98-%EA%B0%95%EC%9D%98-%EB%A1%9C%EA%B7%B8-%ED%8C%8C%EC%9D%B4%ED%94%84%EB%9D%BC%EC%9D%B8-%EA%B0%9C%EC%84%A0%EA%B8%B0-feat.-Kafka)의 동기 처리·멱등성과 ack mode 선택이다. 해당 글의 운영 환경·수치를 이 과제의 결과로 사용하지 않았다.
+
+<a id="dlt-timeout-experiment"></a>
+
+## 12. DLT 전송이 재시도되다가 늦게 실패하면
+
+**상태: 실제 기본 delivery timeout으로 실행 완료. 아래 첫 실행은 MI 조건이며, BATCH 전환 뒤 재실행도 별도로 기록한다. 시간 기준은 기본값을 받아들이기로 했다([ADR 0055](../adr/0055-accept-default-delivery-timeout-for-dead-letter-publishing.md)).** 기존 6절·업무용 handler 실험은 크기 제한으로 바로 거절되는 실패였다. 이번에는 DLT 전송이 producer 내부에서 재시도되는 동안 원본 offset과 뒤 주문이 어떻게 되는지 확인했다.
+
+### 왜 확인했나
+
+기존 설명은 `setWaitForSendResultTimeout(10초)`를 상한으로 해석했다. 실제 API는 최소 대기 시간을 정하며, 결과 대기 예산은 `max(delivery.timeout.ms + timeoutBuffer, 최소 대기)`다. 현재 값은 `max(120초 + 5초, 10초) = 125초`다. 또한 주문용 factory의 max.poll.interval.ms는 기본 300초이며, 공유 batch factory의 120초를 물려받지 않는다.
+
+### 상황과 시작 동작
+
+- 첫 실행은 당시 업무용 @KafkaListener·오류 처리기·MANUAL_IMMEDIATE·parser·DB handler를 Testcontainers Kafka 3.5.1·MySQL 8.0에 연결했다. partition 1·RF1·consumer 1개다.
+- 고유 원본 topic에는 잘못된 JSON(key 42, offset 0)과 정상 주문 43(offset 1)을 미리 보냈다. group의 최초 committed offset은 0이다.
+- 테스트 DLT topic만 최소 ISR을 2로 만들었다. 실제 ISR은 1이므로 broker가 DLT 쓰기를 NotEnoughReplicas로 거절하며 producer가 재시도한다. source topic·broker·DB는 정상이고, 업무용 Compose는 변경하지 않았다.
+- DLT producer metadata를 먼저 확보했다. delivery timeout 120초·최소 결과 대기 10초·기본 buffer 5초·주문용 poll 제한 300초를 그대로 사용했다.
+
+```text
+형식 오류 읽음 → DLT 전송 → 최소 ISR 부족으로 거절·재시도 → 약 120초 뒤 실패
+              원본 offset 0 유지·정상 주문 43 미처리     → listener 중단
+```
+
+### 실제 관찰 결과
+
+| 시점·관찰 | 결과 |
+| --- | --- |
+| 수신 후 12초 | listener 실행 중, producer record-retry-total 13 |
+| 12초 시점 DB·DLT | 완료 기록 0·활동 0·DLT 0 |
+| 12초 시점 원본 | committed offset 0, listener는 offset 0만 처리 경로로 받음 |
+| 첫 수신부터 listener 중단까지 | 120,118ms, 약 120.1초 |
+| 중단 시 producer 재시도 지표 | record-retry-total 121 |
+| 중단 시 DB·DLT·원본 | DB 0·DLT 0·committed offset 0. 정상 주문 43 미처리 |
+| 원인 제거·재시작 | DLT 최소 ISR을 1로 복구하고 producer를 재생성한 뒤 같은 group으로 소비 재시작 |
+| 재시작 후 listener의 전체 수신 offset | 0·0·1. 기존 원본 0을 다시 받아 DLT로 보내고 정상 주문 처리 |
+| 최종 결과 | DLT 1건·완료 기록 1·활동 2·committed offset 2 |
+| DLT 원문·출처 | 원본 key·bytes·topic·offset 0·group 일치 |
+
+대기 예산 125초를 전부 기다린 것이 아니라 producer가 약 120초에 실패 결과를 확정해 중단했다. **10초 뒤에 무조건 멈추는 구현은 아니었고, 오래 기다리는 동안에도 원본 위치와 DB를 유지했다.**
+
+복구에서는 앱 재시작 중 producer 재생성을 `DefaultKafkaProducerFactory.reset()`으로 모사하고 listener를 같은 group으로 다시 시작했다. 실제 프로세스를 재시작하거나, 만료된 producer를 그대로 둔 container.start만으로 복구한 결과는 아니다. 첫 실패 시점까지 DLT 쓰기는 거절됐으므로 이 실행에서는 DLT가 비어 있었다. 모든 전송 timeout이 미저장을 뜻한다는 보장은 아니다.
+
+### 검증·한계와 다음 선택
+
+- [OrderConfirmedDlqTimeoutExperimentTest](../../apps/commerce-streamer/src/test/java/com/loopers/kafka/OrderConfirmedDlqTimeoutExperimentTest.java) 1건 통과. 실제 기본 timeout까지 기다려야 하므로 새 테스트만 experiment 태그로 분리했다. 기존 검사는 이동하거나 완화하지 않았다.
+- 같은 실행에서 ArchUnit 1건·Checkstyle 통과. 최종 실행은 BUILD SUCCESSFUL·2분 45초다. 명령·범위는 [구현 기록 36절](implementation-log.md#dlt-timeout-verification)에 둔다.
+- 이 오류는 최소 ISR 부족으로 만든 실제 retriable 거절이다. broker 무응답·네트워크 분할·프로세스 강제 종료는 아니다.
+- consumer 1개 조건이며, 여러 partition에서 DLT 전송이 겹치는 상황·rebalance 경쟁은 검증하지 않았다.
+- (실험 당시) 현재의 실제 대기 시간을 수용할지, DLT 전용 producer의 delivery timeout 등으로 더 짧은 기준을 둘지는 선택 대기였다. 이후 기본값을 받아들이기로 했다(ADR 0055). 당시에는 설정을 새로 채택하지 않아 새 ADR을 만들지 않았고, 기존 ADR 0049·0053은 본문을 보존한 채 상단에 구현 검증 주석을 추가했다.
+
+[Spring Kafka 3.3.4의 최소 대기 설명](https://docs.spring.io/spring-kafka/docs/3.3.4/api/org/springframework/kafka/listener/DeadLetterPublishingRecoverer.html#setWaitForSendResultTimeout(java.time.Duration)), [Kafka topic 최소 ISR](https://kafka.apache.org/38/generated/topic_config.html#min.insync.replicas)을 기준으로 확인했다.
+
+### BATCH 전환 뒤 같은 지연 실패를 다시 실행
+
+위의 MANUAL_IMMEDIATE 첫 실행은 당시 기록으로 보존한다. [ADR 0054](../adr/0054-commit-order-consumer-offsets-per-poll.md)의 BATCH로 바꾼 뒤 같은 테스트를 다시 실행했다. producer timeout·최소 ISR 오류·consumer 수·입력은 그대로다.
+
+| 관찰 | BATCH 재실행 |
+| --- | --- |
+| 12초 시점 | producer 재시도 13회·listener 실행 중·원본 위치 0·DB 0·DLT 0 |
+| 첫 수신부터 중단 | 120,159ms·producer 재시도 지표 120 |
+| 중단 시 | 원본 위치 0·DB 0·DLT 0, 뒤의 주문 43 미처리 |
+| 원인 제거·producer 재생성·같은 group 재시작 | 전체 전달 offset 0·0·1 |
+| 최종 | 원본 위치 2·DLT 1·완료 기록 1·활동 2, DLT 원문·출처 일치 |
+
+BATCH에서도 실패한 원본을 지나지 않고 복구 뒤 진행했다. 10초 상한을 새로 정한 것은 아니며 시간 기준은 기본값을 받아들였다(ADR 0055). 전체 회귀와 합친 명령·검사 결과는 [구현 기록 37절](implementation-log.md#batch-adoption)에 둔다.
+
+<a id="batch-adoption-verification"></a>
+
+## 13. 업무용 BATCH 연결 뒤 정상·중복·실패·복구 확인
+
+사용자가 BATCH를 선택해 [ADR 0054](../adr/0054-commit-order-consumer-offsets-per-poll.md)를 추가했다. 설정만 바꾸지 않고 실제 @KafkaListener의 수동 ack 인자를 제거하고, 전용 오류 처리기도 BATCH 완료 위치 관리에 연결했다. 주문 한 건씩 동기 DB 처리하는 구조는 유지한다.
+
+### 정상·논리적 중복·DB 저장 뒤 같은 offset 재전달
+
+`OrderConfirmedKafkaListenerIntegrationTest`는 실제 주문용 factory·listener·parser·DB handler를 Kafka 3.5.1·MySQL 8.0에 연결한다. 고유 topic·partition 1·RF1·consumer 1개다. 반환 전 통제된 중단에는 테스트 전용 stopping handler를 쓴다.
+
+| 순서 | 실제 결과 |
+| --- | --- |
+| 주문 42(offset 0) 저장 | 완료 1·활동 2·위치 1 |
+| 같은 사실 재발행(offset 1) | 기존 행 ID·수량 유지·완료 1·활동 2·위치 2 |
+| 주문 43(offset 2) 저장 뒤 listener 반환 전 대기 | DB TX 비활성·완료 2·활동 4·위치 2 |
+| 통제된 예외로 중단 | 위치 2 유지 |
+| 같은 group 재시작 | offset 2 재수신·동일 사실 no-op·기존 완료/활동 ID 유지·최종 위치 3 |
+
+```text
+42 저장 → 위치 1 → 같은 42는 추가 저장 없이 위치 2 → 43은 DB에 저장 → 반환 전 중단
+같은 group 재시작 → 위치 2의 43을 다시 읽음 → 추가 저장 없이 종료 → 위치 3
+```
+
+### 실제 업무용 오류 처리기의 BATCH 경로
+
+`OrderConfirmedKafkaErrorHandlingIntegrationTest`는 테스트 전용 stopping handler 대신 실제 주문용 오류 처리기를 연결한다. 오류 분류·DLT·중단 범위는 바꾸지 않았다. 재시도는 실행을 짧게 하기 위해 0.5초부터 최대 2초·누적 대기 10초, poll 제한 4초를 사용한다. DB 장애는 저장 호출에서 예외를 만드는 수단이며 실제 DB 서버를 끈 실험이 아니다.
+
+| 상황 | 원본 위치·업무 결과 |
+| --- | --- |
+| 정상 42·수량 충돌·잘못된 JSON·정상 43 | 충돌/JSON 원본 offset 1·2가 DLT에 남음. DB는 42·43만 반영, 위치 4 |
+| 44의 DB 저장이 6초 실패한 뒤 회복·뒤의 정상 45 | 재시작 없이 두 주문 저장·위치 6, 중간 revoke 0 |
+| 46의 DB 저장이 계속 실패·뒤의 정상 47 | listener 중단·위치 6·두 주문 미반영. 원인 제거·같은 group 재시작 뒤 두 주문 저장·위치 8 |
+| offset 8의 형식 오류를 DLT가 크기 제한으로 거절·뒤의 정상 48 | listener 중단·위치 8·48 미반영. 제한 복구·재시작 뒤 원본 8을 DLT로 보내고 48 저장·위치 10 |
+
+DLT 성공 뒤 recoverer가 정상 반환하면 container가 진행한다(ackAfterHandle=true). MANUAL_IMMEDIATE용 직접 복구 commit(commitRecovered=true)은 사용하지 않는다. 실패한 DLT 전송과 재시도 소진은 예외로 끝나므로 그 record를 완료로 기록하지 않는다. 앞에서 성공한 record의 위치는 오류 처리 전에 기록될 수 있다.
+
+BATCH에서도 늦게 끝나는 DLT 실패를 [12절의 재실행](#dlt-timeout-experiment)으로 확인했다. 여러 consumer의 동시 중단·rebalance·OS 강제 종료·처리량이나 commit 횟수를 측정한 결과는 아니다. 전체 실행 결과는 [37절](implementation-log.md#batch-adoption)에 둔다.
 
 <a id="config-candidates"></a>
 

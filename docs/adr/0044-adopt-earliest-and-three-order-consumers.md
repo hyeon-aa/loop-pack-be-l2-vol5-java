@@ -6,7 +6,7 @@ Related: [ADR 0037](0037-use-three-brokers-for-local-kafka-experiments.md), [ADR
 Verification: 후속 격리 검증은 [실험 문서](../week6/kafka-settings-experiments.md#three-consumer-purchase-experiment)와 [최신 구현 기록](../week6/implementation-log.md#selected-settings-verification)에 둔다. 아래 본문은 결정 당시 기록으로 보존한다.
 Follow-up: 구매 활동의 group.id는 [ADR 0045](0045-use-purchase-activity-consumer-group.md)에서 purchase-activity로 정한다. 이 ADR의 기본 구성 결정은 Accepted를 유지하며 아래 본문은 group 이름 선택 전의 맥락을 보존한다.
 
-Follow-up (ack): [ADR 0046](0046-acknowledge-order-records-with-manual-immediate.md)에서 주문용 MANUAL_IMMEDIATE를 선택한다. 기존 결정은 Accepted를 유지하며 아래 본문은 결정 당시 기록으로 보존한다.
+Follow-up (ack): 당시 [ADR 0046](0046-acknowledge-order-records-with-manual-immediate.md)에서 MANUAL_IMMEDIATE를 선택했고, 현재는 [ADR 0054](0054-commit-order-consumer-offsets-per-poll.md)의 BATCH로 대체했다. 이 ADR의 기존 결정은 Accepted를 유지하며 아래 본문은 결정 당시 기록으로 보존한다.
 
 Implementation (listener): [조건부 주문용 listener·factory 연결](../week6/implementation-log.md#order-listener-wiring). 기본 비활성과 기존 결정은 유지하며 아래 본문은 당시 기록으로 보존한다.
 

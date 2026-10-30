@@ -33,8 +33,8 @@ import java.util.List;
  * <ul>
  *   <li>메시지 오류·사실 충돌: 재시도 없이 DLQ로 보내고, 전송 성공 뒤에만 원본 offset을 넘긴다.</li>
  *   <li>그 밖의 오류(DB 등): 간격을 늘리며(기본 1초부터 2배, 최대 30초) 총 대기 시간(기본 5분)까지 다시 시도한다.
- *       그 안에 풀리면 스스로 이어 가고, 넘기면 listener 전체를 멈춘다. 간격마다 poll이 다시 일어나므로
- *       한 간격(최대 30초)만 max.poll.interval.ms(2분)보다 짧으면 group에서 빠지지 않는다.</li>
+ *       그 안에 풀리면 스스로 이어 가고, 넘기면 listener 전체를 멈춘다. 실제 poll 사이 시간은
+ *       DB 처리·재시도 대기 등을 합쳐 max.poll.interval.ms(주문용 기본 5분)와 비교해야 한다.</li>
  *   <li>DLQ 전송 실패: listener 전체를 멈춘다. 사람이 원인을 해결하고 같은 group으로 다시 시작한다.</li>
  * </ul>
  * 멈출 때 recoverer가 예외로 끝나므로 원본 offset은 commit되지 않는다.
@@ -45,7 +45,8 @@ import java.util.List;
 @ConditionalOnProperty(prefix = "commerce.order-events.consumer", name = "enabled", havingValue = "true")
 public class OrderConfirmedKafkaErrorHandling {
     public static final String DEAD_LETTER_SUFFIX = "-dlt";
-    // 기다리는 동안 consumer 스레드가 멈춰 있으므로 max.poll.interval(2분)보다 충분히 짧게 둔다.
+    // 이 값은 최소 대기다. 기본 delivery timeout 120초 + buffer 5초로 실제 결과 대기 예산은 125초다.
+    // 10초 상한을 보장하는 설정이 아니며, 이 대기 시간을 받아들인 이유는 ADR 0055에 둔다.
     private static final Duration DEAD_LETTER_SEND_TIMEOUT = Duration.ofSeconds(10);
 
     @Bean
@@ -88,8 +89,10 @@ public class OrderConfirmedKafkaErrorHandling {
         var handler = new DefaultErrorHandler(recoverer, backOff);
         handler.addNotRetryableExceptions(
             InvalidOrderConfirmedMessageException.class, ConflictingOrderConfirmationException.class);
-        // MANUAL_IMMEDIATE에서는 이 값이 있어야 DLQ로 보낸 원본 offset이 commit된다.
-        handler.setCommitRecovered(true);
+        // BATCH는 recoverer가 정상 반환한 record의 위치를 container가 기록한다.
+        // DLT 실패·재시도 소진의 중단은 예외로 끝나므로 해당 record는 완료로 기록하지 않는다.
+        handler.setAckAfterHandle(true);
+        handler.setCommitRecovered(false);
         return handler;
     }
 

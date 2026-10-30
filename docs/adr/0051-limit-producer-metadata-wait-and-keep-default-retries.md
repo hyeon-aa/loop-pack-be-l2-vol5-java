@@ -5,6 +5,8 @@ Related: [ADR 0035](0035-publish-order-confirmation-after-db-commit.md), [ADR 00
 
 Verification: 이후 측정은 [구현 기록 32절](../week6/implementation-log.md#max-block-measurement)에 둔다. metadata가 없는 producer에서 요청이 약 5초 막히고 그동안 DB 커넥션을 쥔 것, metadata가 있으면 막히지 않는 것을 확인했다. 아래 본문은 결정 당시 기록으로 보존한다.
 
+Correction: 아래 Decision의 "DLQ 전송 결과 대기 10초가 그보다 먼저 끝나면"은 사실과 다르다. 10초는 최소 대기이며 실제로는 약 120초 뒤 실패했다([구현 기록 36절](../week6/implementation-log.md#dlt-timeout-verification)). 이 대기를 받아들인 결정은 [ADR 0055](0055-accept-default-delivery-timeout-for-dead-letter-publishing.md)에 둔다.
+
 ## Context
 
 공통 `kafka.yml`의 producer는 템플릿에서 온 `retries: 3`과 클라이언트 기본 `max.block.ms=60000`을 쓰고 있었다. 두 값 모두 일부러 고른 값이 아니었다.

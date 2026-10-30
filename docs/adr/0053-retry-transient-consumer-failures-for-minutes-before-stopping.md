@@ -4,6 +4,8 @@ Status: Accepted
 Supersedes: [ADR 0042](0042-use-two-db-retries-before-stopping-consumer.md)(최대 2회), [ADR 0043](0043-increase-db-retry-delays-from-one-to-two-seconds.md)(1초·2초)
 Related: [ADR 0041](0041-separate-invalid-messages-from-db-retry-exhaustion.md), [ADR 0049](0049-connect-order-consumer-error-handler.md), [ADR 0052](0052-set-mysql-driver-timeouts-per-app.md), [week6 설계](../week6/design.md#consumer-error-handler)
 
+Implementation verification note: [실효 시간 확인](../week6/kafka-settings-experiments.md#dlt-timeout-experiment)에서 주문용 factory는 max.poll.interval.ms 기본 5분을 쓰고 공유 batch factory의 2분을 물려받지 않음을 확인했다. 한 대기 간격뿐 아니라 DB 처리·대기 등을 합한 실제 poll 사이 시간을 비교해야 한다. 아래는 결정 당시의 판단으로 보존하고, 현재 설명은 [설계](../week6/design.md#consumer-error-handler)를 따른다.
+
 ## Context
 
 ADR 0042·0043에 따라 DB 오류 등 메시지 문제가 아닌 실패는 1초·2초 두 번 재시도한 뒤 listener를 멈췄다. 실패한 record를 건너뛰지 않는다는 원칙(ADR 0041)은 지켰지만, 재시도가 3초뿐이라 DB failover·네트워크 순단처럼 수십 초~몇 분이면 저절로 풀리는 장애에도 소비가 멈췄다. 멈춘 뒤에는 사람이 재시작해야 하므로, 일시 장애가 생길 때마다 사람이 들어가야 했다.

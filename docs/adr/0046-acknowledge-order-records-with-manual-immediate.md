@@ -1,6 +1,6 @@
 # ADR 0046: 주문 확정 record는 DB 처리 후 MANUAL_IMMEDIATE로 ack한다
 
-Status: Accepted — ack·조건부 factory/listener 구현, 기본 비활성
+Status: Superseded — [ADR 0054](0054-commit-order-consumer-offsets-per-poll.md)가 주문용 ack 방식을 BATCH로 대체한다. 아래 본문과 당시 검증은 보존한다.
 Related: [ADR 0040](0040-prepare-order-event-receiving-without-auto-subscription.md), [ADR 0041](0041-separate-invalid-messages-from-db-retry-exhaustion.md), [ADR 0044](0044-adopt-earliest-and-three-order-consumers.md), [ADR 0045](0045-use-purchase-activity-consumer-group.md), [week6 설계](../week6/design.md#consumer-ack-mode)
 
 Implementation: [DB 처리 후 ack 어댑터 구현](../week6/implementation-log.md#ack-adapter-implementation). 아래 결정 본문과 당시 검증 범위는 보존한다.

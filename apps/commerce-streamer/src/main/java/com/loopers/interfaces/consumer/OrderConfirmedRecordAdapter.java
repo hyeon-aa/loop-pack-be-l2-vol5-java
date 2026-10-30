@@ -9,7 +9,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Objects;
 
-/** record 파싱·DB 처리와 DB 완료 뒤 수동 ack를 연결한다. 구독 등록은 별도다. */
+/** record 파싱·DB 처리를 수행한다. 업무용 BATCH listener는 한 인자 메서드의 정상 반환 뒤 진행한다. */
 @Component
 @RequiredArgsConstructor
 public class OrderConfirmedRecordAdapter {
@@ -20,6 +20,7 @@ public class OrderConfirmedRecordAdapter {
         handler.handle(parse(record));
     }
 
+    /** 과거 MANUAL/IMMEDIATE 비교 실험의 호출 호환용이다. 업무용 BATCH listener는 사용하지 않는다. */
     public void handle(ConsumerRecord<String, byte[]> record, Acknowledgment acknowledgment) {
         Objects.requireNonNull(acknowledgment, "acknowledgment must not be null");
         handle(record);

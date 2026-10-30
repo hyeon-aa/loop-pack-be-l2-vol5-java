@@ -6,7 +6,7 @@ Related: [ADR 0040](0040-prepare-order-event-receiving-without-auto-subscription
 Verification: 후속 격리 검증은 [실험 문서](../week6/kafka-settings-experiments.md#dlq-delivery-experiment)와 [최신 구현 기록](../week6/implementation-log.md#selected-settings-verification)에 둔다. 아래 본문은 결정 당시 기록으로 보존한다.
 Follow-up: DB 저장 재시도 횟수는 [ADR 0042](0042-use-two-db-retries-before-stopping-consumer.md)에서 최대 2회로 구체화한다. 이 ADR의 오류 분기 결정은 Accepted를 유지하며 아래 본문은 횟수·간격을 정하기 전의 맥락을 보존한다.
 
-Follow-up (ack): [ADR 0046](0046-acknowledge-order-records-with-manual-immediate.md)에서 주문용 MANUAL_IMMEDIATE를 선택한다. 기존 결정은 Accepted를 유지하며 아래 본문은 결정 당시 기록으로 보존한다.
+Follow-up (ack): 당시 [ADR 0046](0046-acknowledge-order-records-with-manual-immediate.md)에서 MANUAL_IMMEDIATE를 선택했고, 현재는 [ADR 0054](0054-commit-order-consumer-offsets-per-poll.md)의 BATCH로 대체했다. 이 ADR의 기존 결정은 Accepted를 유지하며 아래 본문은 결정 당시 기록으로 보존한다.
 
 Follow-up (conflict): [ADR 0047](0047-quarantine-conflicting-order-confirmation-facts.md)에서 같은 식별자의 다른 사실을 DLQ로 분리한다. 기존 DB 보호·오류 분기 결정은 Accepted를 유지하며 아래 본문은 당시 기록으로 보존한다.
 

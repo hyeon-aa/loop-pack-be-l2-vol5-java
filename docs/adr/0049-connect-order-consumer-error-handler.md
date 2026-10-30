@@ -7,6 +7,10 @@ Follow-up (DB timeout): [ADR 0052](0052-set-mysql-driver-timeouts-per-app.md)에
 
 Follow-up (retry): [ADR 0053](0053-retry-transient-consumer-failures-for-minutes-before-stopping.md)에서 메시지 문제가 아닌 실패의 재시도를 1초·2초에서 "1초부터 2배, 한 간격 최대 30초, 합 5분"으로 바꾼다. 이 결정은 Accepted를 유지한다.
 
+Implementation verification note: [DLT 지연 실험](../week6/kafka-settings-experiments.md#dlt-timeout-experiment)에서 아래 본문의 "최대 10초"와 실제 구현의 차이를 확인했다. setWaitForSendResultTimeout은 최소 대기이며 현재 결과 대기 예산은 125초다. 주문용 poll 제한도 공유 batch의 2분이 아닌 기본 5분이다. 기존 결정 본문은 보존하며, 시간 기준 변경은 선택 대기로 둔다. 현재 동작은 [설계](../week6/design.md#consumer-error-handler)를 따른다.
+
+Follow-up (BATCH): [ADR 0054](0054-commit-order-consumer-offsets-per-poll.md)에서 주문용 ack를 BATCH로 바꾸고, DLT 성공 뒤 container가 위치를 기록하도록 ackAfterHandle=true·commitRecovered=false로 연결한다. 재시도·DLT 분류·실패 시 중단 결정은 Accepted로 유지하며 아래 본문은 당시 기록으로 보존한다.
+
 ## Context
 
 ADR 0041·0047·0048은 메시지 오류·사실 충돌을 DLQ로 분리하고, DB 오류는 ADR 0042·0043의 1초·2초 두 번 재시도 뒤 소비를 중단하며, DLQ 전송이 실패하면 중단하는 방향을 정했다. 실제 오류 처리기를 만들려면 세 가지가 남아 있었다.

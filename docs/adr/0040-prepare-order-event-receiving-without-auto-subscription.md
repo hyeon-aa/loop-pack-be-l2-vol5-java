@@ -9,7 +9,7 @@ Follow-up: 메시지 오류의 DLQ 분리와 DB 재시도 소진 후 중단 정�
 
 Follow-up: 첫 읽기 위치 earliest와 partition 3개·동일 group의 활성 consumer 3개 선택은 [ADR 0044](0044-adopt-earliest-and-three-order-consumers.md)에 반영했다. 실제 업무용 구독을 활성화한 변경은 아니며 이 ADR의 Accepted 상태는 유지한다.
 
-Follow-up (ack): [ADR 0046](0046-acknowledge-order-records-with-manual-immediate.md)에서 주문용 MANUAL_IMMEDIATE를 선택한다. 기존 결정은 Accepted를 유지하며 아래 본문은 결정 당시 기록으로 보존한다.
+Follow-up (ack): 당시 [ADR 0046](0046-acknowledge-order-records-with-manual-immediate.md)에서 MANUAL_IMMEDIATE를 선택했고, 현재는 [ADR 0054](0054-commit-order-consumer-offsets-per-poll.md)의 BATCH로 대체했다. 이 ADR의 기존 결정은 Accepted를 유지하며 아래 본문은 결정 당시 기록으로 보존한다.
 
 Implementation (listener): [조건부 주문용 listener·factory 연결](../week6/implementation-log.md#order-listener-wiring). 기본 비활성과 기존 결정은 유지하며 아래 본문은 당시 기록으로 보존한다.
 

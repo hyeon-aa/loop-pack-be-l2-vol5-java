@@ -43,7 +43,7 @@ public class OrderConfirmedKafkaConfiguration {
         factory.setConsumerFactory(new DefaultKafkaConsumerFactory<>(settings));
         factory.setBatchListener(false);
         factory.setConcurrency(concurrency);
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.BATCH);
         factory.getContainerProperties().setSyncCommits(true);
         factory.getContainerProperties().setAssignmentCommitOption(ContainerProperties.AssignmentCommitOption.NEVER);
         factory.setCommonErrorHandler(errorHandler);

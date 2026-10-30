@@ -58,7 +58,8 @@ import static org.mockito.Mockito.doAnswer;
  * 총 대기 시간을 넘기면 중단하고, DLQ 전송 실패도 중단한다. 중단 뒤에는 원인을 없애고 같은 group으로 다시 시작한다.
  * 재시도 값은 테스트용으로 짧게 넣었다(운영: 1초부터 2배, 최대 간격 30초, 총 5분).
  * max.poll.interval.ms를 4초로 줄였다. 한 간격(최대 2초)이 그보다 짧으면, 총 대기(최대 10초)가 그보다 길어도
- * 간격마다 poll이 다시 일어나 group에서 빠지지 않는지(revoke 0회) 본다. 운영은 한 간격 최대 30초 < 2분이다.
+ * 간격마다 poll이 다시 일어나 group에서 빠지지 않는지(revoke 0회) 본다. DB가 빠르게 예외를 던지는 조건이다.
+ * 주문용 factory의 max.poll.interval.ms 기본값은 5분이며, 처리·대기를 합한 실제 poll 사이 시간을 봐야 한다.
  */
 @SpringBootTest(classes = {KafkaFailureHandlingExperimentTest.DatabaseConfig.class,
     OrderConfirmedKafkaConfiguration.class, OrderConfirmedKafkaErrorHandling.class,

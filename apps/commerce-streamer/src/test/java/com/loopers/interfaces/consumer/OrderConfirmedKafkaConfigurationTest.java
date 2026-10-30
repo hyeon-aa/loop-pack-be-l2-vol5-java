@@ -40,7 +40,7 @@ class OrderConfirmedKafkaConfigurationTest {
                     ConcurrentKafkaListenerContainerFactory.class);
                 assertThat(factory.isBatchListener()).isFalse();
                 assertThat(factory.getContainerProperties().getAckMode())
-                    .isEqualTo(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+                    .isEqualTo(ContainerProperties.AckMode.BATCH);
                 assertThat(factory.getContainerProperties().getAssignmentCommitOption())
                     .isEqualTo(ContainerProperties.AssignmentCommitOption.NEVER);
                 var settings = factory.getConsumerFactory().getConfigurationProperties();
