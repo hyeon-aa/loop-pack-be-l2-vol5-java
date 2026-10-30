@@ -110,6 +110,8 @@ spring.config.activate.on-profile: local
 
 commerce.cache.price.prefix: commerce:price-page:v3:local
 commerce.cache.popular.prefix: commerce:popular-page:v1:local
+# 로컬 3대 클러스터의 order-events(compose init이 생성)로 주문 확정 이벤트를 보낸다.
+commerce.order-events.enabled: true
 
 ---
 spring.config.activate.on-profile: benchmark

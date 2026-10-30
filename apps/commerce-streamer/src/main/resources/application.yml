@@ -14,7 +14,7 @@ spring:
   main:
     web-application-type: servlet
   application:
-    name: commerce-api
+    name: commerce-streamer
   profiles:
     active: local
   config:
@@ -34,7 +34,7 @@ commerce:
   order-events:
     topic: order-events
     consumer:
-      enabled: false # 기본은 끈다.
+      enabled: false # 기본은 끈다. local profile에서만 켠다(아래).
       # 메시지 문제가 아닌 실패(DB 등)의 재시도. 이 시간 안에 풀리면 스스로 이어 가고, 넘기면 listener를 멈춘다.
       retry:
         initial-interval: 1s
@@ -47,6 +47,14 @@ spring:
   config:
     activate:
       on-profile: local, test
+
+---
+spring.config.activate.on-profile: local
+
+# 로컬은 앱 1대이므로 concurrency 3이 group 전체 consumer 3개(ADR 0044)다.
+commerce.order-events.consumer:
+  enabled: true
+  concurrency: 3
 
 ---
 spring:
