@@ -35,6 +35,12 @@ commerce:
     topic: order-events
     consumer:
       enabled: false # 기본은 끈다.
+      # 메시지 문제가 아닌 실패(DB 등)의 재시도. 이 시간 안에 풀리면 스스로 이어 가고, 넘기면 listener를 멈춘다.
+      retry:
+        initial-interval: 1s
+        multiplier: 2
+        max-interval: 30s
+        max-elapsed-time: 5m # 간격의 합. DB failover(보통 수십 초~2분)보다 넉넉하게
 
 ---
 spring:

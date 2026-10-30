@@ -1,6 +1,7 @@
 package com.loopers.application.purchase;
 
 import com.loopers.domain.purchase.DuplicateOrderConfirmationException;
+import com.loopers.domain.purchase.OrderConfirmationConflictException;
 import com.loopers.domain.purchase.OrderPurchase;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -11,7 +12,11 @@ public class OrderConfirmationHandler {
     private final PurchaseActivityRecorder recorder;
 
     public void handle(OrderConfirmationCommand command) {
-        handle(command.purchase());
+        try {
+            handle(command.purchase());
+        } catch (OrderConfirmationConflictException conflict) {
+            throw new ConflictingOrderConfirmationException(conflict);
+        }
     }
 
     public void handle(OrderPurchase purchase) {
