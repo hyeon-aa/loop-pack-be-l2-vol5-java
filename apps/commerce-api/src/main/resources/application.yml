@@ -22,6 +22,7 @@ spring:
     import:
       - jpa.yml
       - redis.yml
+      - kafka.yml
       - logging.yml
       - monitoring.yml
 
@@ -31,6 +32,9 @@ springdoc:
     path: /swagger-ui.html
 
 commerce:
+  order-events:
+    enabled: false
+    topic: order-events
   payment:
     pg:
       base-url: http://127.0.0.1:18080
