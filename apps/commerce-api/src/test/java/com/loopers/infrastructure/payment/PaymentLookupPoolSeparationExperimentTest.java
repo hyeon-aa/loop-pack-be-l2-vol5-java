@@ -33,7 +33,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 같은 PG(400ms), 연결 총 5개, 조회 20건·생성 POST 1건으로 세 후보를 비교한다.
  * 공유 풀 5개, 공유 풀 5개·조회 실행 3개 제한, 조회 풀 3개·생성 풀 2개 분리다.
  * 실제 adapter와 retry·회로를 쓰되, 주문 DB 처리 없이 HTTP 경계에서 자원 경쟁만 확인한다.
- * 예측: 풀 분리는 POST를 보호하지만, 조회 풀 대기 실패로 조회 회로는 열릴 수 있다.
+ * 연결을 빌리지 못한 조회는 회로 집계에서 빠지므로(ADR 0060) 세 조건 모두 조회 회로는 닫혀 있다.
+ * 실행 제한이 없으면 대기하던 조회가 retry로 400ms에 풀린 연결을 한 번 더 잡아, 처음 연결 수의 두 배를 확인한다.
  */
 @Tag("experiment")
 class PaymentLookupPoolSeparationExperimentTest {
@@ -111,18 +112,14 @@ class PaymentLookupPoolSeparationExperimentTest {
                 policy, verified, rejected, unverified, pg.lookupCalls(), circuit.getState(),
                 failuresAtOpen.get(), created.kind(), createReceived, createMillis);
 
-            assertThat(verified).isEqualTo(initialLookups);
-            assertThat(pg.lookupCalls()).isEqualTo(initialLookups);
+            int expectedVerified = policy == Policy.BULKHEAD ? initialLookups : initialLookups * 2;
+            assertThat(verified).isEqualTo(expectedVerified);
+            assertThat(pg.lookupCalls()).isEqualTo(expectedVerified);
             assertThat(rejected).isEqualTo(policy == Policy.BULKHEAD ? CONCURRENT_LOOKUPS - initialLookups : 0);
-            assertThat(unverified).isEqualTo(policy == Policy.BULKHEAD ? 0 : CONCURRENT_LOOKUPS - initialLookups);
-            if (policy == Policy.BULKHEAD) {
-                assertThat(circuit.getState()).isEqualTo(CircuitBreaker.State.CLOSED);
-                assertThat(circuit.getMetrics().getNumberOfFailedCalls()).isZero();
-            } else {
-                assertThat(circuit.getState()).isEqualTo(CircuitBreaker.State.OPEN);
-                // OPEN 뒤 도착한 정상 응답이 창을 바꿀 수 있으므로, 열리는 순간의 실패 표본을 확인한다.
-                assertThat(failuresAtOpen.get()).isGreaterThanOrEqualTo(4);
-            }
+            assertThat(unverified).isEqualTo(policy == Policy.BULKHEAD ? 0 : CONCURRENT_LOOKUPS - expectedVerified);
+            assertThat(circuit.getState()).isEqualTo(CircuitBreaker.State.CLOSED);
+            assertThat(failuresAtOpen.get()).isZero();
+            assertThat(circuit.getMetrics().getNumberOfFailedCalls()).isZero();
             if (policy == Policy.SHARED_POOL && createReceived == 0) {
                 assertThat(created.kind()).isEqualTo(PaymentObservation.Kind.NOT_SENT);
             } else {

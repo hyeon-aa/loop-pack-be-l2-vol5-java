@@ -43,10 +43,21 @@ public class FakePaymentServer implements AutoCloseable {
     private final Queue<Duration> nextDelays = new ConcurrentLinkedQueue<>();
     private final AtomicReference<Duration> delayEveryResponse = new AtomicReference<>();
     private final AtomicReference<Runnable> beforeNextLookupReply = new AtomicReference<>();
+    private int delayedLookupEvery;
+    private Duration patternedLookupDelay;
+    private int patternLookupCalls;
+    private int delayedLookupCalls;
+    /** PG handler 진입부터 응답 전송 종료까지. 앱의 풀 획득·연결 수립 시간은 포함하지 않는다. */
+    private final Queue<Handled> handled = new ConcurrentLinkedQueue<>();
 
     public FakePaymentServer() throws IOException {
-        server = start(0);
-        port = server.getAddress().getPort();
+        this(0);
+    }
+
+    /** 부하 실험처럼 앱 설정에 주소를 미리 적어야 할 때 고정 포트로 연다. 0이면 빈 포트를 고른다. */
+    public FakePaymentServer(int port) throws IOException {
+        server = start(port);
+        this.port = server.getAddress().getPort();
     }
 
     private HttpServer start(int port) throws IOException {
@@ -77,10 +88,26 @@ public class FakePaymentServer implements AutoCloseable {
     }
 
     /** 아직 쓰지 않은 지정 응답·지연 예약을 비운다. 장애를 걷어 낸 뒤 남은 예약이 복구 장면에 섞이지 않게 한다. */
-    public void clearQueuedFaults() {
+    public synchronized void clearQueuedFaults() {
         nextReplies.clear();
         nextDelays.clear();
+        delayedLookupEvery = 0;
+        patternedLookupDelay = null;
     }
+
+    /** 수신 순서대로 N번째 조회마다 지연한다. 생성과 거래 상태는 바꾸지 않는다. */
+    public synchronized void delayEveryNthLookup(int every, Duration delay) {
+        if (every < 1 || delay == null || delay.isNegative()) {
+            throw new IllegalArgumentException("조회 간격과 지연 시간이 올바르지 않습니다.");
+        }
+        delayedLookupEvery = every;
+        patternedLookupDelay = delay;
+        patternLookupCalls = 0;
+        delayedLookupCalls = 0;
+    }
+
+    public synchronized int patternLookupCalls() { return patternLookupCalls; }
+    public synchronized int delayedLookupCalls() { return delayedLookupCalls; }
 
     /** 모든 응답을 지정한 시간만큼 늦춘다. null이면 해제한다. 생성 요청은 늦어진 뒤에도 거래를 만든다. */
     public void delayEveryResponse(Duration delay) { delayEveryResponse.set(delay); }
@@ -98,7 +125,13 @@ public class FakePaymentServer implements AutoCloseable {
     public int lookupCalls() { return lookupCalls.get(); }
     public int transactionCount() { return transactions.size(); }
 
+    public List<JsonNode> transactions() {
+        return transactions.values().stream().<JsonNode>map(JsonNode::deepCopy).toList();
+    }
+
     public synchronized List<Request> requests() { return List.copyOf(requests); }
+
+    public List<Handled> handled() { return List.copyOf(handled); }
 
     /** 같은 서버를 여러 테스트가 쓸 때 거래·호출 수·다음 응답 설정을 비운다. 응답 보류(latch)는 되돌리지 않는다. */
     public synchronized void reset() {
@@ -112,6 +145,11 @@ public class FakePaymentServer implements AutoCloseable {
         nextDelays.clear();
         delayEveryResponse.set(null);
         beforeNextLookupReply.set(null);
+        delayedLookupEvery = 0;
+        patternedLookupDelay = null;
+        patternLookupCalls = 0;
+        delayedLookupCalls = 0;
+        handled.clear();
     }
 
     public void changeStatus(String transactionKey, String status) {
@@ -123,7 +161,24 @@ public class FakePaymentServer implements AutoCloseable {
         });
     }
 
+    /** 부하 종료 뒤 이미 만들어진 거래를 확정해 앱의 조회 복구를 확인한다. */
+    public void completeAll(String status) {
+        if (!List.of("SUCCESS", "FAILED").contains(status)) {
+            throw new IllegalArgumentException("확정 상태가 필요합니다.");
+        }
+        transactions.replaceAll((key, transaction) -> ((ObjectNode) transaction.deepCopy()).put("status", status));
+    }
+
     private void handle(HttpExchange exchange) throws IOException {
+        long started = System.nanoTime();
+        try {
+            handlePayment(exchange);
+        } finally {
+            handled.add(new Handled(exchange.getRequestMethod(), Duration.ofNanos(System.nanoTime() - started)));
+        }
+    }
+
+    private void handlePayment(HttpExchange exchange) throws IOException {
         try (exchange) {
             String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             boolean create = "POST".equals(exchange.getRequestMethod());
@@ -142,6 +197,13 @@ public class FakePaymentServer implements AutoCloseable {
                 Duration queued = nextDelays.poll();
                 delay = queued != null ? queued : delayEveryResponse.get();
                 override = nextReplies.poll();
+                if (!create && delayedLookupEvery > 0) {
+                    patternLookupCalls++;
+                    if (queued == null && patternLookupCalls % delayedLookupEvery == 0) {
+                        delay = patternedLookupDelay;
+                        delayedLookupCalls++;
+                    }
+                }
             }
             if (delay != null) {
                 try {
@@ -219,5 +281,8 @@ public class FakePaymentServer implements AutoCloseable {
     }
 
     public record Request(String method, String path, String rawQuery, String userId, String contentType, String body) {}
+
+    /** method는 POST(생성) 또는 GET(조회), duration은 요청을 받은 뒤 응답을 다 보낼 때까지의 시간이다. */
+    public record Handled(String method, Duration duration) {}
     private record Reply(int status, String body) {}
 }

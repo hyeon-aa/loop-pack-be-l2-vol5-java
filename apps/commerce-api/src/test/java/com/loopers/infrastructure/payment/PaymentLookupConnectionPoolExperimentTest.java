@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * PG는 모든 조회에 400ms 뒤 정상 응답한다. 우리 쪽 연결 풀(같은 주소당 5개, 빌리기 대기 300ms)보다 많은 조회가
- * 동시에 몰리면, 연결을 빌리지 못한 실패가 PG 장애처럼 회로에 기록되는지 본다.
+ * 동시에 몰리면, 연결을 빌리지 못한 실패가 PG 장애처럼 회로에 기록되는지 본다. 지금은 회로 집계에서 빠진다(ADR 0060).
  * 앞의 5개가 실제로 PG에 도착해 연결을 점유한 것을 확인한 뒤 나머지를 보낸다.
  * 회로의 창은 최근 4개만 기억하므로, 시도 수는 회로 이벤트를 받아 따로 센다.
  */
@@ -64,8 +64,8 @@ class PaymentLookupConnectionPoolExperimentTest {
     }
 
     @ParameterizedTest(name = "concurrent={0}: verified={1}, unverified={2}, circuit={3}")
-    @CsvSource({"5, 5, 0, CLOSED", "10, 5, 5, OPEN", "20, 5, 15, OPEN"})
-    void connectionShortageIsRecordedAsPgFailureAndOpensTheCircuitWhilePgAnswersNormally(
+    @CsvSource({"5, 5, 0, CLOSED", "10, 10, 0, CLOSED", "20, 10, 10, CLOSED"})
+    void connectionShortageIsLeftOutOfTheCircuitWhilePgAnswersNormally(
         int concurrent, int expectedVerified, int expectedUnverified, State expectedState
     ) throws Exception {
         ResilientPaymentProvider provider = new ResilientPaymentProvider(adapter, LookupSettingsFixture.LEARNING, new TestClock());
@@ -99,21 +99,23 @@ class PaymentLookupConnectionPoolExperimentTest {
             int recordedSuccess = count(events, CircuitBreakerEvent.Type.SUCCESS);
             int recordedFailure = count(events, CircuitBreakerEvent.Type.ERROR);
             int notPermitted = count(events, CircuitBreakerEvent.Type.NOT_PERMITTED);
-            int clientAttempts = recordedSuccess + recordedFailure;
+            int ignored = count(events, CircuitBreakerEvent.Type.IGNORED_ERROR);
+            int clientAttempts = recordedSuccess + recordedFailure + ignored;
             int pgReceived = pg.lookupCalls();
             System.out.printf("pool-experiment,concurrent=%d,verified=%d,blockedByCircuit=%d,retryExhausted=%d,"
                     + "clientAttempts=%d,pgReceived=%d,neverReachedPg=%d,recordedSuccess=%d,recordedFailure=%d,"
-                    + "notPermitted=%d,circuit=%s,slowestMs=%d%n",
+                    + "ignored=%d,notPermitted=%d,circuit=%s,slowestMs=%d%n",
                 concurrent, verified, blockedByCircuit, retryExhausted, clientAttempts, pgReceived,
-                clientAttempts - pgReceived, recordedSuccess, recordedFailure, notPermitted,
+                clientAttempts - pgReceived, recordedSuccess, recordedFailure, ignored, notPermitted,
                 provider.lookupCircuitBreaker().getState(), slowest);
 
             assertThat(verified).isEqualTo(expectedVerified);
             assertThat(blockedByCircuit + retryExhausted).isEqualTo(expectedUnverified);
             assertThat(provider.lookupCircuitBreaker().getState()).isEqualTo(expectedState);
-            // PG는 한 번도 실패하지 않았다. 회로가 센 실패는 모두 PG에 닿지 못한 시도다.
+            // PG는 한 번도 실패하지 않았다. PG에 닿지 못한 시도는 실패가 아니라 무시한 표본으로만 남는다.
             assertThat(pgReceived).isEqualTo(recordedSuccess);
-            assertThat(recordedFailure).isEqualTo(clientAttempts - pgReceived);
+            assertThat(recordedFailure).isZero();
+            assertThat(ignored).isEqualTo(clientAttempts - pgReceived);
         } finally {
             executor.shutdownNow();
         }

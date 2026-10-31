@@ -1,5 +1,10 @@
 package com.loopers.infrastructure.payment;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -11,14 +16,28 @@ import java.time.Duration;
 @Configuration
 public class PaymentProviderConfig {
 
-    @Bean
-    TestPgPaymentAdapter paymentProvider(
+    // Actuator 없이 PG 설정만 독립 기동할 때는 빈 composite로 측정을 내보내지 않는다.
+    private final MeterRegistry fallbackRegistry = new CompositeMeterRegistry();
+
+    @Bean(name = "paymentProvider")
+    TestPgPaymentAdapter meteredPaymentProvider(
         @Value("${commerce.payment.pg.base-url}") String baseUrl,
         @Value("${commerce.payment.pg.callback-url}") String callbackUrl,
         @Value("${commerce.payment.pg.connect-timeout}") Duration connectTimeout,
         @Value("${commerce.payment.pg.read-timeout}") Duration readTimeout,
-        @Value("${commerce.payment.pg.lookup-read-timeout}") Duration lookupReadTimeout
+        @Value("${commerce.payment.pg.lookup-read-timeout}") Duration lookupReadTimeout,
+        ObjectProvider<MeterRegistry> registries
     ) {
+        MeterRegistry registry = registries.getIfAvailable(() -> fallbackRegistry);
+        var pool = PoolingHttpClientConnectionManagerBuilder.create().build();
+        var timed = new TimedPgConnectionManager(pool, registry, "shared");
+        return new TestPgPaymentAdapter(baseUrl, callbackUrl, connectTimeout, readTimeout, lookupReadTimeout,
+            HttpClients.custom().setConnectionManager(timed));
+    }
+
+    /** Spring 없이 HTTP 계약·기존 설정 비교에 쓰는 비계측 adapter. */
+    TestPgPaymentAdapter paymentProvider(String baseUrl, String callbackUrl, Duration connectTimeout,
+                                         Duration readTimeout, Duration lookupReadTimeout) {
         return new TestPgPaymentAdapter(baseUrl, callbackUrl, connectTimeout, readTimeout, lookupReadTimeout);
     }
 
@@ -40,11 +59,13 @@ public class PaymentProviderConfig {
         @Value("${commerce.payment.pg.lookup-circuit.minimum-calls}") int minimumCalls,
         @Value("${commerce.payment.pg.lookup-circuit.failure-rate-threshold}") float failureRateThreshold,
         @Value("${commerce.payment.pg.lookup-circuit.open-wait}") Duration openWait,
-        @Value("${commerce.payment.pg.lookup-circuit.half-open-calls}") int halfOpenCalls
+        @Value("${commerce.payment.pg.lookup-circuit.half-open-calls}") int halfOpenCalls,
+        ObjectProvider<MeterRegistry> registries
     ) {
         Duration attemptEstimate = connectTimeout.multipliedBy(2).plus(lookupReadTimeout);
         LookupResilienceSettings settings = new LookupResilienceSettings(lookupBudget, attemptEstimate,
             maxAttempts, firstWait, waitMultiplier, windowSize, minimumCalls, failureRateThreshold, openWait, halfOpenCalls);
-        return new ResilientPaymentProvider(adapter, settings, Clock.systemUTC());
+        return new ResilientPaymentProvider(new TimedPaymentProvider(adapter, registries.getIfAvailable(() -> fallbackRegistry)),
+            settings, Clock.systemUTC());
     }
 }

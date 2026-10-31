@@ -12,7 +12,9 @@ import org.apache.hc.client5.http.ConnectTimeoutException;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.classic.RequestFailedException;
 import org.apache.hc.core5.http.ConnectionRequestTimeoutException;
+import org.apache.hc.core5.util.DeadlineTimeoutException;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.web.client.HttpClientErrorException;
@@ -97,13 +99,29 @@ public class TestPgPaymentAdapter implements PaymentProvider, AutoCloseable {
         }
     }
 
+    /** 연결 풀에서 연결을 빌리지 못한 조회는 PG에 닿지 않았으므로 PG의 일시적 장애와 구분한다. */
+    private static PaymentObservation lookupNotAnswered(ResourceAccessException exception) {
+        for (Throwable cause = exception.getCause(); cause != null; cause = cause.getCause()) {
+            if (isConnectionAcquisitionTimeout(cause)) {
+                return PaymentObservation.unknown(UnknownCause.CONNECTION_UNAVAILABLE);
+            }
+        }
+        return PaymentObservation.unknown(UnknownCause.TEMPORARY_FAILURE);
+    }
+
+    /** lease future 자체가 만료되면 HttpClient는 RequestFailedException으로 감싼다. 연결 수립 이후 timeout과 구분한다. */
+    static boolean isConnectionAcquisitionTimeout(Throwable cause) {
+        return cause instanceof ConnectionRequestTimeoutException
+            || (cause instanceof RequestFailedException && cause.getCause() instanceof DeadlineTimeoutException);
+    }
+
     /**
      * 요청 본문이 나가기 전, 연결 단계에서 끝났는지 본다. 연결을 빌리지 못함·연결 거부·연결 시간 초과만 해당한다.
      * 응답 timeout은 요청이 PG에 닿았을 수 있어 해당하지 않는다.
      */
     private static boolean endedBeforeSending(ResourceAccessException exception) {
         for (Throwable cause = exception.getCause(); cause != null; cause = cause.getCause()) {
-            if (cause instanceof ConnectionRequestTimeoutException || cause instanceof ConnectException
+            if (isConnectionAcquisitionTimeout(cause) || cause instanceof ConnectException
                 || cause instanceof ConnectTimeoutException) {
                 return true;
             }
@@ -137,7 +155,9 @@ public class TestPgPaymentAdapter implements PaymentProvider, AutoCloseable {
             return PaymentObservation.observed(List.of(toTransaction(response.getBody())));
         } catch (HttpClientErrorException.NotFound exception) {
             return PaymentObservation.observed(List.of());
-        } catch (ResourceAccessException | HttpServerErrorException exception) {
+        } catch (ResourceAccessException exception) {
+            return lookupNotAnswered(exception);
+        } catch (HttpServerErrorException exception) {
             return PaymentObservation.unknown(UnknownCause.TEMPORARY_FAILURE);
         } catch (RestClientException | IllegalArgumentException exception) {
             return PaymentObservation.unknown(UnknownCause.UNEXPECTED_RESPONSE);
@@ -159,7 +179,9 @@ public class TestPgPaymentAdapter implements PaymentProvider, AutoCloseable {
                 transactions.add(toTransaction(transaction));
             }
             return PaymentObservation.observed(transactions);
-        } catch (ResourceAccessException | HttpServerErrorException exception) {
+        } catch (ResourceAccessException exception) {
+            return lookupNotAnswered(exception);
+        } catch (HttpServerErrorException exception) {
             return PaymentObservation.unknown(UnknownCause.TEMPORARY_FAILURE);
         } catch (RestClientException | IllegalArgumentException exception) {
             return PaymentObservation.unknown(UnknownCause.UNEXPECTED_RESPONSE);

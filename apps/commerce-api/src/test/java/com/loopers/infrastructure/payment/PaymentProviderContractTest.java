@@ -292,6 +292,29 @@ class PaymentProviderContractTest {
     }
 
     @Test
+    void lookupThatCannotBorrowAConnectionIsConnectionUnavailable() throws Exception {
+        String transactionKey = provider.create(payment()).transactions().getFirst().transactionKey();
+        pg.delayEveryResponse(Duration.ofMillis(450));
+        var executor = Executors.newFixedThreadPool(5);
+        try {
+            // 조회 5개가 연결 5개를 모두 잡은 동안, 다음 조회는 연결 빌리기 대기(300ms)에서 끝나 PG에 닿지 않는다.
+            for (int i = 0; i < 5; i++) {
+                executor.submit(() -> provider.findByTransactionKey(transactionKey));
+            }
+            long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+            while (pg.lookupCalls() < 5 && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+
+            assertThat(provider.findByTransactionKey(transactionKey))
+                .isEqualTo(PaymentObservation.unknown(PaymentObservation.UnknownCause.CONNECTION_UNAVAILABLE));
+            assertThat(pg.lookupCalls()).isEqualTo(5);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void createWhoseResponseTimesOutIsNotProvenNotSent() {
         pg.delayNextResponse(Duration.ofMillis(800));
 
