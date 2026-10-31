@@ -1222,6 +1222,36 @@ commerce-change-review 기준으로 정상 반환 전 DB 완료, 동일 사실 n
 
 동작은 바뀌지 않는다. 코드는 주석의 참조만 고쳤고 새 테스트를 실행하지 않았다. ADR 0051은 본문을 보존하고 상단에 "10초" 문장의 정정을 표시했다. design.md와 실험 12절의 선택 대기 표기를 결정으로 맞췄다.
 
+<a id="volume5-base-integration"></a>
+
+## 39. 머지된 5주차 기준을 volume-6에 통합
+
+원본 저장소의 `hyeon-aa`에 [5주차 PR #76](https://github.com/loopers-labs/loop-pack-be-l2-vol5-java/pull/76)이 병합된 `086f761`을 `volume-6`에 반영했다. 기존 6주차에는 빠져 있던 5주차 후속 커밋 `1dc9309`의 PG 조회 연결 부족 분류·호출/풀 획득 계측·관련 검증을 포함한다. [6주차 PR #106](https://github.com/loopers-labs/loop-pack-be-l2-vol5-java/pull/106)은 기존처럼 원본 `hyeon-aa`를 기준으로 유지하며 PR 자체는 병합하지 않는다.
+
+### 통합 범위와 정적 대조
+
+- 38개 파일을 충돌 없이 병합했다. `apps/commerce-api/build.gradle.kts`는 자동 병합됐으며 6주차 Kafka 의존성·공유 test fixture와 5주차의 실험 전용 작업이 함께 남는 것을 확인했다.
+- PG 조회 후속 결정은 기존 ADR 0060~0062를 따른다. 새 Kafka 설정·재시도 정책·트랜잭션 경계를 채택한 변경은 아니다. 주문 최초 SUCCESS의 이벤트 준비와 `AFTER_COMMIT` 발행, streamer의 DB 저장 뒤 BATCH 위치 기록은 유지한다.
+- 병합 diff의 공백 검사(`git diff --check HEAD^1 HEAD`)는 통과했다. 기존 미추적 파일과 개인 학습·블로그 자료는 변경 범위에 넣지 않는다.
+
+### 실행 검증
+
+첫 `:apps:commerce-api:check :apps:commerce-streamer:check`는 Testcontainers의 Docker 연결이 HTTP 400으로 거절돼 API 통합 테스트의 컨텍스트 생성 단계에서 실패했다. Docker Desktop의 기존 API 호환 설정을 이번 실행 프로세스에만 적용해 같은 검사를 다시 실행했다. 이 환경 실패를 기능 회귀로 판정하지 않는다.
+
+```bash
+env DOCKER_HOST=unix:///Users/johyeon-a/.docker/run/docker.sock \
+  JAVA_TOOL_OPTIONS=-Dapi.version=1.44 \
+  JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
+  ./gradlew :apps:commerce-api:check :apps:commerce-streamer:check --offline --no-parallel
+```
+
+호환 설정을 적용한 재실행은 `BUILD SUCCESSFUL`·5분 25초였다.
+
+- commerce-api 정규 테스트 550건(ArchUnit 1건 포함)을 실제 실행했고 실패·오류·skip은 모두 0이다. API main/test Checkstyle은 첫 병합 검사에서 통과했으며 재실행에서는 UP-TO-DATE였다.
+- commerce-streamer의 `check`도 통과했다. main Checkstyle은 실행·위반 0, test Checkstyle과 정규 test는 UP-TO-DATE였다. 기존 XML의 90건(ArchUnit 포함)·실패/오류/skip 0은 이전 실행 결과이며, 이번 병합에서 streamer 테스트 90건을 새로 실행했다고 기록하지 않는다.
+- 두 앱의 `check`는 33개 작업 중 3개 실행·30개 UP-TO-DATE로 끝났다. 테스트 기대값·Checkstyle·ArchUnit 규칙이나 Kafka 설정은 바꾸지 않았다.
+- experiment 태그의 부하·장애·설정 비교 실험과 로컬 3대 클러스터의 두 앱 사례는 이번 기준 병합에서 실행하지 않았다.
+
 ## 아직 검증하지 않은 것
 
 - 운영 재시도 값(간격의 합 5분)을 그대로 쓴 실행, 실제 DB 서버 중단·failover
