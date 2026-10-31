@@ -1,6 +1,6 @@
 # ADR 0034: 확실한 미발송만 실패로 닫고, 오래 조회되지 않는 결제는 미완료로 유지한다
 
-Status: Accepted
+Status: Accepted. 조회 GET의 연결 부족 분류는 [ADR 0060](0060-exclude-lookup-connection-shortage-from-circuit.md)로 확장
 Related: [ADR 0028](0028-test-pg-http-boundary-and-no-create-retry.md), [ADR 0030](0030-pg-payment-split-transactions-and-apply-once.md), [ADR 0033](0033-payment-recovery-batch-for-unfinished-attempts.md)
 
 ## Context

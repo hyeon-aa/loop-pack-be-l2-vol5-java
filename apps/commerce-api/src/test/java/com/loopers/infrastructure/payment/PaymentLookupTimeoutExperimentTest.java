@@ -27,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * timeout 값만 바꾸어 "얼마나 늦으면 실패로 볼까"의 선이 retry·회로·연결 사용에 주는 영향을 본다.
  * A. 조회 응답 대기 300·500·800ms를 PG 응답 400ms(조금 느린 정상)·2초(많이 느림)에서 고객 6명이 차례로 확인한다.
  * B. 연결 빌리기 대기 300·500ms를 연결 풀 장면(PG 400ms, 동시 조회 20개, 연결 5개)에서 비교한다.
+ *    연결을 빌리지 못한 조회는 회로 집계에서 빠지므로(ADR 0060), 300ms에서도 retry가 400ms에 풀린 연결을 잡는다.
  * 실제 adapter와 ResilientPaymentProvider에 값만 바꿔 넣는다. retry 예산 판단에 쓰는 조회 한 번의 추정 시간도
  * 실제 설정처럼 "연결 대기 × 2 + 조회 응답 대기"로 함께 맞춘다. 그 밖의 retry·회로 설정은 학습값과 같다.
  */
@@ -95,7 +96,7 @@ class PaymentLookupTimeoutExperimentTest {
     }
 
     @ParameterizedTest(name = "connectionWait={0}ms: verified={1}, circuit={2}")
-    @CsvSource({"300, 5, OPEN", "500, 10, OPEN"})
+    @CsvSource({"300, 10, CLOSED", "500, 10, CLOSED"})
     void connectionWaitDecidesWhetherWaitingLookupsGetAFreedConnection(
         long connectionWaitMillis, int expectedVerified, State expectedState
     ) throws Exception {

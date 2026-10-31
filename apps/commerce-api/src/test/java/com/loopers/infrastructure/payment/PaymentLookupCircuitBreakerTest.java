@@ -11,6 +11,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.github.resilience4j.circuitbreaker.CircuitBreaker.State.CLOSED;
 import static io.github.resilience4j.circuitbreaker.CircuitBreaker.State.HALF_OPEN;
@@ -98,6 +100,22 @@ class PaymentLookupCircuitBreakerTest {
     }
 
     @Test
+    void rateLimitedLookupRemainsUnknownAndIsNotImmediatelyRetried() {
+        for (int i = 0; i < 4; i++) {
+            pg.replyNext(429, "");
+            PaymentObservation result = i % 2 == 0
+                ? provider.findByTransactionKey(KEY) : provider.findByOrderId("LP-ORD-0000000042");
+
+            assertThat(result).isEqualTo(PaymentObservation.unknown(UnknownCause.UNEXPECTED_RESPONSE));
+        }
+
+        assertThat(pg.lookupCalls()).isEqualTo(4);
+        assertThat(provider.lookupCircuitBreaker().getState()).isEqualTo(CLOSED);
+        assertThat(provider.lookupCircuitBreaker().getMetrics().getNumberOfFailedCalls()).isZero();
+        assertThat(provider.lookupCircuitBreaker().getMetrics().getNumberOfSuccessfulCalls()).isEqualTo(4);
+    }
+
+    @Test
     void unexpectedHalfOpenResponsesCountAsSuccessButRemainUnknown() {
         openCircuit();
         clock.advance(Duration.ofSeconds(11));
@@ -152,6 +170,41 @@ class PaymentLookupCircuitBreakerTest {
         assertThat(result.kind()).isEqualTo(PaymentObservation.Kind.OBSERVED);
         assertThat(pg.lookupCalls()).isEqualTo(lookupsBefore + 2);
         assertThat(provider.lookupCircuitBreaker().getState()).isEqualTo(OPEN);
+    }
+
+    @Test
+    void connectionShortageIsRetriedButLeftOutOfTheCircuitWindow() throws Exception {
+        // 연결을 오래 잡고 있도록 조회 응답 대기를 5초로 둔 adapter. 연결 5개를 앞의 조회 5개가 모두 잡는다.
+        try (TestPgPaymentAdapter slowLookupAdapter = new PaymentProviderConfig().paymentProvider(pg.baseUrl(),
+            "http://127.0.0.1:8080/api/v1/payments/callback", Duration.ofMillis(300), Duration.ofSeconds(1), Duration.ofSeconds(5))) {
+            ResilientPaymentProvider shortProvider = new ResilientPaymentProvider(slowLookupAdapter, LookupSettingsFixture.LEARNING, clock);
+            AtomicInteger ignored = new AtomicInteger();
+            shortProvider.lookupCircuitBreaker().getEventPublisher().onIgnoredError(event -> ignored.incrementAndGet());
+            pg.delayEveryResponse(Duration.ofSeconds(4));
+            var executor = Executors.newFixedThreadPool(5);
+            try {
+                for (int i = 0; i < 5; i++) {
+                    executor.submit(() -> slowLookupAdapter.findByTransactionKey(KEY));
+                }
+                long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+                while (pg.lookupCalls() < 5 && System.nanoTime() < deadline) {
+                    Thread.sleep(5);
+                }
+
+                // 실패로 셌다면 두 조회의 재시도 실패만으로 창 4칸이 차 OPEN이 됐을 장면이다.
+                for (int i = 0; i < 2; i++) {
+                    assertThat(shortProvider.findByTransactionKey(KEY))
+                        .isEqualTo(PaymentObservation.unknown(UnknownCause.CONNECTION_UNAVAILABLE));
+                }
+
+                assertThat(ignored.get()).isGreaterThanOrEqualTo(4);
+                assertThat(pg.lookupCalls()).isEqualTo(5);
+                assertThat(shortProvider.lookupCircuitBreaker().getState()).isEqualTo(CLOSED);
+                assertThat(shortProvider.lookupCircuitBreaker().getMetrics().getNumberOfBufferedCalls()).isZero();
+            } finally {
+                executor.shutdownNow();
+            }
+        }
     }
 
     private void openCircuit() {

@@ -1,6 +1,7 @@
 # ADR 0031: PG 조회만 이유 라벨로 판정해 제한된 retry·회로·fallback으로 감싼다
 
-Status: Accepted
+Status: Accepted. 조회의 연결 부족을 회로 집계에서 빼는 결정은 [ADR 0060](0060-exclude-lookup-connection-shortage-from-circuit.md)로 확장
+Extended by: [ADR 0061](0061-separate-pg-attempt-pool-acquisition-and-server-timing.md) — 시도·풀 획득 계측 경계
 Related: [ADR 0032](0032-persist-payment-result-before-order-application.md), [ADR 0028](0028-test-pg-http-boundary-and-no-create-retry.md), [ADR 0030](0030-pg-payment-split-transactions-and-apply-once.md)
 
 ## Context

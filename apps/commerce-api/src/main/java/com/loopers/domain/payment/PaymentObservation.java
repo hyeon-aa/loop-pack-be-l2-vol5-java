@@ -36,6 +36,10 @@ public record PaymentObservation(Kind kind, List<PaymentTransaction> transaction
     public enum UnknownCause {
         /** timeout·연결 실패·5xx. 대답을 듣지 못했고 잠시 뒤 다시 물으면 답할 수 있다. */
         TEMPORARY_FAILURE,
+        /** 우리 쪽 연결 풀에서 연결을 빌리지 못해 PG에 묻지 못했다. PG 장애가 아니다. 잠시 뒤 다시 물으면 답할 수 있다. */
+        CONNECTION_UNAVAILABLE,
+        /** 동시 조회 한도에 도달해 PG에 묻지 않았다. 다음 조회에서 다시 확인한다. */
+        CONCURRENCY_LIMIT,
         /** 응답은 받았지만 계약과 달라 쓸 수 없다. 다시 물어도 같을 가능성이 크다. */
         UNEXPECTED_RESPONSE,
         /** 최근 조회 장애가 많아 회로가 막았다. PG에 묻지 않았다. */

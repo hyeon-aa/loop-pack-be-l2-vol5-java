@@ -12,7 +12,6 @@ import io.github.resilience4j.retry.Retry;
 import io.github.resilience4j.retry.RetryConfig;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
-import org.apache.hc.core5.http.ConnectionRequestTimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -31,6 +30,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -38,10 +38,12 @@ import static io.github.resilience4j.circuitbreaker.CircuitBreaker.State;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 연결을 빌리지 못한 실패를 회로가 셀 때(현재 정책)와 세지 않을 때(후보 정책)를 같은 장면에서 비교한다.
- * 실제 adapter는 두 실패를 같은 TEMPORARY_FAILURE로 돌려줘 밖에서 구분할 수 없으므로, 이 테스트 안에서만
- * adapter와 같은 HTTP 설정(같은 주소당 연결 5개, 빌리기 대기 300ms, 응답 대기 500ms, 자동 재시도 끔)으로 조회하고
- * 연결 빌리기 timeout만 따로 표시한다. retry·회로 설정과 감싸는 순서(retry → 회로)는 학습값과 같다. 제품 코드는 바꾸지 않는다.
+ * 연결을 빌리지 못한 실패를 회로가 실패로 셀 때, 성공으로 셀 때, 집계에서 뺄 때를 같은 장면에서 비교한다.
+ * 회로는 결과(result)를 실패 아니면 성공으로만 기록하므로, 연결 부족은 예외로 던지고 정책마다 그 예외의 기록 방식만 바꾼다.
+ * 집계 제외는 ignoreExceptions로 한다. 무시한 예외는 허가만 돌려주고 창에 넣지 않는다.
+ * 세 분류 후보를 비교하려고 테스트 안에서 adapter와 같은 HTTP 설정(같은 주소당 연결 5개, 빌리기 대기 300ms,
+ * 응답 대기 500ms, 자동 재시도 끔)으로 조회하고 연결 빌리기 timeout을 따로 표시한다.
+ * 실제 adapter·provider의 현재 분류는 별도 계약·회로 테스트가 확인한다.
  */
 @Tag("experiment")
 class PaymentLookupPoolFailureCountingExperimentTest {
@@ -81,12 +83,72 @@ class PaymentLookupPoolFailureCountingExperimentTest {
         }
     }
 
-    @ParameterizedTest(name = "pg={0}ms, countPoolFailure={1}")
-    @CsvSource({"400, true", "400, false", "2000, true", "2000, false"})
-    void comparesCountingConnectionShortageAsPgFailure(long pgResponseMillis, boolean countPoolFailure) throws Exception {
+    @ParameterizedTest(name = "pg={0}ms, poolFailure={1}")
+    @CsvSource({"400, FAILURE", "400, SUCCESS", "400, IGNORED", "2000, FAILURE", "2000, SUCCESS", "2000, IGNORED"})
+    void comparesCountingConnectionShortageAsPgFailure(long pgResponseMillis, PoolFailureRecording recording) throws Exception {
+        Outcome outcome = run(pgResponseMillis, false, SETTINGS.windowSize(), recording);
+
+        assertThat(outcome.poolFailures()).isPositive();
+        assertThat(outcome.ignored()).isEqualTo(recording == PoolFailureRecording.IGNORED ? outcome.poolFailures() : 0);
+        if (pgResponseMillis < 500) {
+            // PG가 정상이면, 연결 부족을 실패로 세는 정책만 회로를 연다.
+            assertThat(outcome.state()).isEqualTo(recording == PoolFailureRecording.FAILURE ? State.OPEN : State.CLOSED);
+            assertThat(outcome.pgFailures()).isZero();
+            assertThat(outcome.verified()).isGreaterThanOrEqualTo(POOL_PER_ROUTE);
+        } else {
+            // PG가 느리면, 연결 부족을 실패로 세지 않아도 PG까지 간 요청의 timeout으로 회로가 열린다.
+            assertThat(outcome.state()).isEqualTo(State.OPEN);
+            assertThat(outcome.verified()).isZero();
+        }
+    }
+
+    /**
+     * PG가 400ms 뒤 503을 주는 장면과, 창을 20으로 넓혀(최소 표본 4는 유지) 과거 표본을 오래 기억하는 장면.
+     * 창 20에서는 성공으로 센 연결 부족이 창에 남아 실제 PG 실패(503·timeout)의 실패율을 25%로 낮춰 회로가 열리지 않았다.
+     */
+    @ParameterizedTest(name = "pg={0}ms, 503={1}, window={2}, poolFailure={3} -> {4}")
+    @CsvSource({
+        "400, true, 4, FAILURE, OPEN", "400, true, 4, SUCCESS, OPEN", "400, true, 4, IGNORED, OPEN",
+        "400, false, 20, FAILURE, OPEN", "400, false, 20, SUCCESS, CLOSED", "400, false, 20, IGNORED, CLOSED",
+        "2000, false, 20, FAILURE, OPEN", "2000, false, 20, SUCCESS, CLOSED", "2000, false, 20, IGNORED, OPEN",
+        "400, true, 20, FAILURE, OPEN", "400, true, 20, SUCCESS, CLOSED", "400, true, 20, IGNORED, OPEN"
+    })
+    void comparesPgFailureDetectionInWiderWindow(long pgResponseMillis, boolean pgReturns503, int windowSize,
+                                                 PoolFailureRecording recording, State expectedState) throws Exception {
+        Outcome outcome = run(pgResponseMillis, pgReturns503, windowSize, recording);
+
+        assertThat(outcome.state()).isEqualTo(expectedState);
+        assertThat(outcome.poolFailures()).isPositive();
+        assertThat(outcome.ignored()).isEqualTo(recording == PoolFailureRecording.IGNORED ? outcome.poolFailures() : 0);
+        if (pgReturns503 || pgResponseMillis > 500) {
+            assertThat(outcome.pgFailures()).isPositive();
+            if (recording == PoolFailureRecording.IGNORED) {
+                // 연결 부족이 실제로 발생했어도 성공·실패 표본에는 PG 실패만 남아야 한다.
+                assertThat(outcome.successes()).isZero();
+                assertThat(outcome.buffered()).isEqualTo(outcome.failures());
+                assertThat(outcome.failureRate()).isEqualTo(100.0f);
+            } else if (recording == PoolFailureRecording.SUCCESS && windowSize == 20) {
+                assertThat(outcome.successes()).isPositive();
+                assertThat(outcome.failureRate()).isLessThan(SETTINGS.failureRateThreshold());
+            }
+        }
+    }
+
+    private Outcome run(long pgResponseMillis, boolean pgReturns503, int windowSize, PoolFailureRecording recording)
+        throws Exception {
         pg.delayEveryResponse(Duration.ofMillis(pgResponseMillis));
-        CircuitBreaker circuit = circuitBreaker(countPoolFailure);
+        if (pgReturns503) {
+            for (int i = 0; i < 100; i++) {
+                pg.replyNext(503, "");
+            }
+        }
+        CircuitBreaker circuit = circuitBreaker(windowSize, recording);
+        AtomicInteger ignored = new AtomicInteger();
+        circuit.getEventPublisher().onIgnoredError(event -> ignored.incrementAndGet());
         AtomicLong openedAtNanos = new AtomicLong();
+        AtomicLong failureRateAtOpen = new AtomicLong(-1);
+        circuit.getEventPublisher().onFailureRateExceeded(event ->
+            failureRateAtOpen.compareAndSet(-1, Math.round(event.getFailureRate())));
         circuit.getEventPublisher().onStateTransition(event -> {
             if (event.getStateTransition().getToState() == State.OPEN) {
                 openedAtNanos.compareAndSet(0, System.nanoTime());
@@ -99,10 +161,11 @@ class PaymentLookupPoolFailureCountingExperimentTest {
         long started = System.nanoTime();
         ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT);
         List<Future<Attempt>> futures = new ArrayList<>();
+        CountDownLatch firstWave = new CountDownLatch(CONCURRENT);
         try {
-            futures.addAll(start(executor, POOL_PER_ROUTE, circuit, attempts, poolFailures, pgFailures));
+            futures.addAll(start(executor, POOL_PER_ROUTE, circuit, attempts, poolFailures, pgFailures, firstWave));
             awaitLookupsReceived(POOL_PER_ROUTE);
-            futures.addAll(start(executor, CONCURRENT - POOL_PER_ROUTE, circuit, attempts, poolFailures, pgFailures));
+            futures.addAll(start(executor, CONCURRENT - POOL_PER_ROUTE, circuit, attempts, poolFailures, pgFailures, firstWave));
 
             int verified = 0;
             int blocked = 0;
@@ -116,63 +179,86 @@ class PaymentLookupPoolFailureCountingExperimentTest {
                 }
             }
             long openedAtMillis = openedAtNanos.get() == 0 ? -1 : Duration.ofNanos(openedAtNanos.get() - started).toMillis();
-            System.out.printf("pool-count-experiment,pg=%dms,countPoolFailure=%s,verified=%d,blockedByCircuit=%d,"
-                    + "retryExhausted=%d,attempts=%d,poolFailures=%d,pgFailures=%d,pgReceived=%d,circuit=%s,openedAtMs=%d%n",
-                pgResponseMillis, countPoolFailure, verified, blocked, exhausted, attempts.get(), poolFailures.get(),
-                pgFailures.get(), pg.lookupCalls(), circuit.getState(), openedAtMillis);
-
-            if (pgResponseMillis < 500) {
-                // PG가 정상이면, 연결 부족을 세는 정책만 회로를 연다.
-                assertThat(circuit.getState()).isEqualTo(countPoolFailure ? State.OPEN : State.CLOSED);
-                assertThat(pgFailures.get()).isZero();
-                assertThat(verified).isGreaterThanOrEqualTo(POOL_PER_ROUTE);
-            } else {
-                // PG가 느리면, 연결 부족을 세지 않아도 PG까지 간 요청의 timeout으로 회로가 열린다.
-                assertThat(circuit.getState()).isEqualTo(State.OPEN);
-                assertThat(verified).isZero();
-            }
+            // OPEN이면 열리던 순간의 실패율, 끝까지 CLOSED면 마지막 창의 실패율(표본이 모자라면 -1)
+            float failureRate = failureRateAtOpen.get() >= 0 ? failureRateAtOpen.get() : circuit.getMetrics().getFailureRate();
+            Outcome outcome = new Outcome(verified, blocked, exhausted, attempts.get(), poolFailures.get(), pgFailures.get(),
+                ignored.get(), pg.lookupCalls(), circuit.getState(), openedAtMillis, circuit.getMetrics().getNumberOfBufferedCalls(),
+                circuit.getMetrics().getNumberOfSuccessfulCalls(), circuit.getMetrics().getNumberOfFailedCalls(), failureRate);
+            System.out.printf("pool-count-experiment,pg=%dms,503=%s,window=%d,poolFailure=%s,verified=%d,blockedByCircuit=%d,"
+                    + "retryExhausted=%d,attempts=%d,poolFailures=%d,pgFailures=%d,ignored=%d,pgReceived=%d,circuit=%s,"
+                    + "openedAtMs=%d,failureRate=%.0f,buffered=%d%n",
+                pgResponseMillis, pgReturns503, windowSize, recording, verified, blocked, exhausted, outcome.attempts(),
+                outcome.poolFailures(), outcome.pgFailures(), outcome.ignored(), outcome.pgReceived(), outcome.state(),
+                openedAtMillis, failureRate, circuit.getMetrics().getNumberOfBufferedCalls());
+            return outcome;
         } finally {
             executor.shutdownNow();
         }
     }
 
     private List<Future<Attempt>> start(ExecutorService executor, int count, CircuitBreaker circuit,
-                                        AtomicInteger attempts, AtomicInteger poolFailures, AtomicInteger pgFailures) {
+                                        AtomicInteger attempts, AtomicInteger poolFailures, AtomicInteger pgFailures,
+                                        CountDownLatch firstWave) {
         CountDownLatch go = new CountDownLatch(1);
         List<Future<Attempt>> futures = new ArrayList<>();
         for (int i = 0; i < count; i++) {
             futures.add(executor.submit(() -> {
                 go.await();
-                return lookupWithPolicy(circuit, attempts, poolFailures, pgFailures);
+                return lookupWithPolicy(circuit, attempts, poolFailures, pgFailures, firstWave);
             }));
         }
         go.countDown();
         return futures;
     }
 
-    /** ResilientPaymentProvider와 같은 retry 조건(일시적 실패, 남은 예산)과 순서(retry → 회로 → GET)로 감싼다. */
+    /** 같은 retry 조건·순서를 쓰되, 비교를 위해 최초 20건의 집계 뒤 retry를 허용한다. 앱에 없는 실험용 경계다. */
     private Attempt lookupWithPolicy(CircuitBreaker circuit, AtomicInteger attempts,
-                                     AtomicInteger poolFailures, AtomicInteger pgFailures) {
+                                     AtomicInteger poolFailures, AtomicInteger pgFailures, CountDownLatch firstWave) {
         long deadline = System.nanoTime() + SETTINGS.budget().toNanos();
+        AtomicBoolean firstAttempt = new AtomicBoolean(true);
         Retry retry = Retry.of("poolCountExperiment", RetryConfig.<Attempt>custom()
             .maxAttempts(SETTINGS.maxAttempts())
             .intervalFunction(IntervalFunction.ofExponentialBackoff(SETTINGS.firstWait(), SETTINGS.waitMultiplier()))
-            .retryOnResult(result -> result.isTemporary() && hasTimeForAnotherAttempt(deadline))
-            .ignoreExceptions(CallNotPermittedException.class)
+            .retryOnResult(result -> result == Attempt.PG_FAILURE && hasTimeForAnotherAttempt(deadline))
+            .retryOnException(exception -> exception instanceof PoolExhaustedException && hasTimeForAnotherAttempt(deadline))
             .build());
         try {
-            return retry.executeSupplier(() -> circuit.executeSupplier(() -> {
-                attempts.incrementAndGet();
-                Attempt result = getOnce();
-                if (result == Attempt.POOL_EXHAUSTED) {
-                    poolFailures.incrementAndGet();
-                } else if (result == Attempt.PG_FAILURE) {
-                    pgFailures.incrementAndGet();
+            return retry.executeSupplier(() -> {
+                try {
+                    return circuit.executeSupplier(() -> {
+                        attempts.incrementAndGet();
+                        Attempt result = getOnce();
+                        if (result == Attempt.POOL_EXHAUSTED) {
+                            poolFailures.incrementAndGet();
+                            throw new PoolExhaustedException();
+                        }
+                        if (result == Attempt.PG_FAILURE) {
+                            pgFailures.incrementAndGet();
+                        }
+                        return result;
+                    });
+                } finally {
+                    if (firstAttempt.compareAndSet(true, false)) {
+                        awaitFirstWave(firstWave);
+                    }
                 }
-                return result;
-            }));
+            });
         } catch (CallNotPermittedException exception) {
             return Attempt.BLOCKED;
+        } catch (PoolExhaustedException exception) {
+            return Attempt.POOL_EXHAUSTED;
+        }
+    }
+
+    private static void awaitFirstWave(CountDownLatch firstWave) {
+        firstWave.countDown();
+        try {
+            if (!firstWave.await(3, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("First lookup wave did not finish");
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(exception);
         }
     }
 
@@ -181,7 +267,12 @@ class PaymentLookupPoolFailureCountingExperimentTest {
             lookupClient.get().uri("/api/v1/payments/{transactionKey}", transactionKey).retrieve().toBodilessEntity();
             return Attempt.OBSERVED;
         } catch (ResourceAccessException exception) {
-            return exception.getCause() instanceof ConnectionRequestTimeoutException ? Attempt.POOL_EXHAUSTED : Attempt.PG_FAILURE;
+            for (Throwable cause = exception.getCause(); cause != null; cause = cause.getCause()) {
+                if (TestPgPaymentAdapter.isConnectionAcquisitionTimeout(cause)) {
+                    return Attempt.POOL_EXHAUSTED;
+                }
+            }
+            return Attempt.PG_FAILURE;
         } catch (HttpServerErrorException exception) {
             return Attempt.PG_FAILURE;
         }
@@ -192,18 +283,23 @@ class PaymentLookupPoolFailureCountingExperimentTest {
         return deadline - System.nanoTime() >= longestWait.plus(SETTINGS.attemptEstimate()).toNanos();
     }
 
-    private static CircuitBreaker circuitBreaker(boolean countPoolFailure) {
-        return CircuitBreaker.of("poolCountExperiment", CircuitBreakerConfig.custom()
+    private static CircuitBreaker circuitBreaker(int windowSize, PoolFailureRecording recording) {
+        CircuitBreakerConfig.Builder config = CircuitBreakerConfig.custom()
             .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
-            .slidingWindowSize(SETTINGS.windowSize())
+            .slidingWindowSize(windowSize)
             .minimumNumberOfCalls(SETTINGS.minimumCalls())
             .failureRateThreshold(SETTINGS.failureRateThreshold())
             .waitDurationInOpenState(SETTINGS.openWait())
             .permittedNumberOfCallsInHalfOpenState(SETTINGS.halfOpenCalls())
             .automaticTransitionFromOpenToHalfOpenEnabled(false)
-            .recordResult(result -> result == Attempt.PG_FAILURE || (countPoolFailure && result == Attempt.POOL_EXHAUSTED))
-            .clock(new TestClock())
-            .build());
+            .recordResult(result -> result == Attempt.PG_FAILURE)
+            .clock(new TestClock());
+        switch (recording) {
+            case FAILURE -> { } // 회로는 기본으로 모든 예외를 실패로 기록한다.
+            case SUCCESS -> config.recordException(exception -> !(exception instanceof PoolExhaustedException));
+            case IGNORED -> config.ignoreExceptions(PoolExhaustedException.class);
+        }
+        return CircuitBreaker.of("poolCountExperiment", config.build());
     }
 
     private void awaitLookupsReceived(int count) throws InterruptedException {
@@ -214,11 +310,15 @@ class PaymentLookupPoolFailureCountingExperimentTest {
         assertThat(pg.lookupCalls()).isEqualTo(count);
     }
 
-    private enum Attempt {
-        OBSERVED, POOL_EXHAUSTED, PG_FAILURE, BLOCKED;
+    private enum Attempt { OBSERVED, POOL_EXHAUSTED, PG_FAILURE, BLOCKED }
 
-        boolean isTemporary() {
-            return this == POOL_EXHAUSTED || this == PG_FAILURE;
-        }
+    private record Outcome(int verified, int blocked, int exhausted, int attempts, int poolFailures, int pgFailures,
+                           int ignored, int pgReceived, State state, long openedAtMillis, int buffered,
+                           int successes, int failures, float failureRate) {}
+
+    /** 연결을 빌리지 못한 조회를 회로에 어떻게 남길지. */
+    enum PoolFailureRecording { FAILURE, SUCCESS, IGNORED }
+
+    private static class PoolExhaustedException extends RuntimeException {
     }
 }
