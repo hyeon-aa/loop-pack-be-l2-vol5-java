@@ -1252,9 +1252,17 @@ env DOCKER_HOST=unix:///Users/johyeon-a/.docker/run/docker.sock \
 - 두 앱의 `check`는 33개 작업 중 3개 실행·30개 UP-TO-DATE로 끝났다. 테스트 기대값·Checkstyle·ArchUnit 규칙이나 Kafka 설정은 바꾸지 않았다.
 - experiment 태그의 부하·장애·설정 비교 실험과 로컬 3대 클러스터의 두 앱 사례는 이번 기준 병합에서 실행하지 않았다.
 
+<a id="setting-behavior-verification"></a>
+
+## 40. 설명으로만 있던 설정의 동작 확인
+
+`KafkaConsumerSettingsExperimentTest` 8건과 `KafkaAcksLevelExperimentTest` 2건을 추가했다. 결과는 [실험 14절](kafka-settings-experiments.md#setting-behavior-experiments)에 적었다. 주요 관찰은 auto commit이 처리 결과와 무관하게 3을 남기는 것, `kill -9`한 consumer가 session 6초 뒤 제외되는 것, poll이 멈춰도 heartbeat로 group에 남다가 poll 간격 초과로 떠나는 것, 기본 오류 처리기의 총 10번 시도, `acks=1`이 `min.insync.replicas=2`와 무관하게 성공 응답을 주고 20건을 잃는 장면, static member의 재시작에서 남은 consumer가 재배정되지 않는 것이다.
+
+두 실험 클래스 10건과 streamer test Checkstyle 통과, 실패·오류·skip 0, 업무 코드·설정 변경 없음. 짧은 시간 값은 관찰용이고, 강제 종료는 실험용 별도 JVM consumer만 대상으로 했다.
+
 ## 아직 검증하지 않은 것
 
 - 운영 재시도 값(간격의 합 5분)을 그대로 쓴 실행, 실제 DB 서버 중단·failover
 - concurrency 3에서 listener 전체가 함께 멈추는 동작, 재시도 중 rebalance가 겹칠 때의 재시도 횟수
-- 프로세스 강제 종료(`kill -9`)와 `session.timeout.ms` 동안의 partition 정체, 처리 시간이 `max.poll.interval.ms`를 넘길 때의 재전달
-- broker 중단에 의한 producer 2단계(비동기) 전송 실패, `acks=0`·`acks=1`의 유실 비교
+- 업무 앱·Spring listener의 프로세스 강제 종료와 `session.timeout.ms` 동안의 partition 정체, 업무 listener의 처리 시간이 `max.poll.interval.ms`를 넘길 때의 재전달 (raw consumer 동작은 40절에서 확인)
+- broker 중단에 의한 producer 2단계(비동기) 전송 실패

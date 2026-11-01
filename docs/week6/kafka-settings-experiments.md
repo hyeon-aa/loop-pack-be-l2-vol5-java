@@ -15,6 +15,7 @@ Kafka 설정을 하나씩 바꿨을 때 실제 동작이 어떻게 달라지는�
 | [consumer ack](#manual-ack-experiment) | MANUAL/IMMEDIATE의 ack 직후 위치, DB 실패·복구, IMMEDIATE의 no-op 재전달 | 당시 MI 채택·연결 기록. 현재 BATCH로 대체(ADR 0054) |
 | [BATCH / MANUAL_IMMEDIATE](#batch-ack-experiment) | 한 poll의 첫 주문 DB commit 뒤 중단, 재시작 시 재전달 범위와 최종 구매 활동 비교 | 사용자 선택으로 BATCH 적용. [ADR 0054](../adr/0054-commit-order-consumer-offsets-per-poll.md)·[업무용 검증](#batch-adoption-verification) |
 | [DLT 지연 실패](#dlt-timeout-experiment) | 재시도 가능한 실제 거절로 약 120.1초 대기·원본 위치 보호·중단·복구 확인 | 실효값 확인 완료. 기본 대기를 받아들임([ADR 0055](../adr/0055-accept-default-delivery-timeout-for-dead-letter-publishing.md)) |
+| [설정 동작 확인](#setting-behavior-experiments) | auto commit, session·heartbeat, poll 간격, 기본 오류 처리기, acks 0·1 동작 | 동작 확인 완료. 업무 설정 변경 없음 |
 | [같은 이벤트의 사실 충돌](#conflicting-fact-experiment) | 기존 수량 유지, DLQ 후 정상 주문 진행 / 중단·같은 충돌 재수신 비교 | DLQ 분리 후 계속 처리, 업무용 오류 처리기에 연결 |
 
 실험은 업무용 클러스터와 분리한 Testcontainers 환경에서 했다. 실험용 partition 수·consumer 수·timeout을 업무용 설정으로 채택한 것은 아니다. 새 비교도 한 번에 한 항목만 진행한다.
@@ -734,6 +735,32 @@ BATCH에서도 실패한 원본을 지나지 않고 복구 뒤 진행했다. 10�
 DLT 성공 뒤 recoverer가 정상 반환하면 container가 진행한다(ackAfterHandle=true). MANUAL_IMMEDIATE용 직접 복구 commit(commitRecovered=true)은 사용하지 않는다. 실패한 DLT 전송과 재시도 소진은 예외로 끝나므로 그 record를 완료로 기록하지 않는다. 앞에서 성공한 record의 위치는 오류 처리 전에 기록될 수 있다.
 
 BATCH에서도 늦게 끝나는 DLT 실패를 [12절의 재실행](#dlt-timeout-experiment)으로 확인했다. 여러 consumer의 동시 중단·rebalance·OS 강제 종료·처리량이나 commit 횟수를 측정한 결과는 아니다. 전체 실행 결과는 [37절](implementation-log.md#batch-adoption)에 둔다.
+
+<a id="setting-behavior-experiments"></a>
+
+## 14. 설명으로만 있던 설정의 실제 동작 확인
+
+**상태: 동작 확인 완료. 이 절의 짧은 값은 관찰용이며 업무 설정으로 채택하지 않았다.**
+
+`KafkaConsumerSettingsExperimentTest`와 `KafkaAcksLevelExperimentTest`(`experiment` tag)로 확인했다. 업무 코드·DB 없이 실제 Kafka 3.5.1에서 클라이언트 설정만 바꿨다. broker 1대 fixture를 쓰고, `acks=1` 유실만 데이터 broker 3대·별도 controller fixture를 썼다.
+
+| 설정 | 만든 상황 | 관찰 |
+| --- | --- | --- |
+| `enable.auto.commit` | 3건을 poll하고 처리하지 않은 채 정상 close | true: 커밋 위치 3, 재시작 뒤 0건 수신 / false: 커밋 위치 없음, 재시작 뒤 3건 수신 |
+| `enable.auto.commit=true` + 강제 종료 | 별도 JVM consumer가 3건 받은 뒤 `kill -9`, commit 간격 60초 | 커밋 위치 없음, 재시작 뒤 3건 수신 |
+| `session.timeout.ms=6초`, heartbeat 1초 | 별도 JVM consumer `kill -9` | 2초 뒤에도 member 1, 약 5.9초 뒤 제외 |
+| 정상 close | 같은 session 설정 | close 뒤 약 0.1초에 group에서 빠짐 |
+| `max.poll.interval.ms=12초`, session 6초 | poll 없이 대기 | 9초에도 member 1, 약 12.2초에 스스로 떠남. 늦은 commit은 `CommitFailedException`, 다음 consumer가 같은 record 수신 |
+| `max.poll.records` 100 / 500 | 처리 없이 3,000건 읽기 | 30회·최대 100건, 6회·최대 500건. 초당 처리량은 100을 크게 넘음 |
+| 기본 오류 처리기 | offset 0 처리가 항상 실패, 뒤에 정상 1건 | 총 10번 시도, 다음 record 처리, committed offset 2 |
+| `acks=0` / `acks=1` | `max.message.bytes=100` topic에 1KB 전송 | acks=0: 성공 응답·offset -1·저장 0건 / acks=1: `RecordTooLargeException`·저장 0건 |
+| `acks=1` + `min.insync.replicas=2` | follower 정지 후 20건 전송, unclean 선출 | 20건 성공 응답, 같은 조건의 `acks=all` 1건은 `TimeoutException`, unclean 선출 뒤 20건 사라짐 |
+| `group.instance.id` | consumer 2개 중 1개를 close 뒤 session 10초 안에 재시작 | 일반: close 뒤 멤버 1, 남은 consumer의 revoke 2회 / static: 멤버 2 유지, revoke 0회 |
+| `delivery.timeout.ms` | 15초 < `request.timeout.ms` 20초 | producer 생성 실패, 원인 `ConfigException` |
+
+- `max.poll.records`의 처리량 값은 DB·업무 처리 없이 메시지를 읽기만 한 결과라 성능 수치로 쓰지 않는다. 한 poll의 상한과 초당 처리량이 다른 단위임을 확인했을 뿐이다.
+- `acks=1` 유실은 앞선 비교처럼 unclean 선출을 직접 요청해 만든 장면이다.
+- 강제 종료는 실험용 별도 JVM consumer의 `kill -9`이며, 업무 앱이나 Spring listener를 죽인 것은 아니다. 짧은 값은 broker의 최소 session 제한 안에서 고른 관찰값이다.
 
 <a id="config-candidates"></a>
 
